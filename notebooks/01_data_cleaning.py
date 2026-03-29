@@ -28,7 +28,7 @@ from pyspark.sql.types import StringType, IntegerType
 # ============================================================
 CATALOG = "hackathon_vf"
 SCHEMA = "healthcare"
-DATASET_PATH = "/FileStore/tables/dataset.csv"
+DATASET_PATH = "file:/Workspace/Users/vm8810@srmist.edu.in/dataset.csv"
 TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
 
 try:
@@ -173,7 +173,9 @@ agg_exprs = []
 
 for field in single_fields:
     if field in df_raw.columns:
-        agg_exprs.append(F.first(F.col(field), ignorenulls=True).alias(field))
+        # Delta tables do not allow spaces in column names
+        safe_alias = field.replace(" ", "_").replace(".", "")
+        agg_exprs.append(F.first(F.col(field), ignorenulls=True).alias(safe_alias))
 
 agg_exprs.append(F.collect_set("source_url").cast("string").alias("source_urls"))
 agg_exprs.append(F.count("*").alias("source_count"))
