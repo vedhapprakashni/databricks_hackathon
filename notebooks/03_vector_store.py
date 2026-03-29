@@ -20,10 +20,21 @@
 import time
 from databricks.vector_search.client import VectorSearchClient
 
-CATALOG = spark.conf.get("hackathon.catalog", "hive_metastore")
-SCHEMA = spark.conf.get("hackathon.schema", "hackathon")
+# ============================================================
+# CONFIG: Must match what was set in 00_setup
+# ============================================================
+CATALOG = "hackathon_vf"
+SCHEMA = "healthcare"
 TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
-VS_ENDPOINT = spark.conf.get("hackathon.vs_endpoint", "vf_facility_search")
+VS_ENDPOINT = "vf_facility_search"
+
+try:
+    spark.sql(f"USE CATALOG {CATALOG}")
+    spark.sql(f"USE SCHEMA {SCHEMA}")
+except Exception:
+    CATALOG = "hive_metastore"
+    SCHEMA = "hackathon"
+    TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
 
 SOURCE_TABLE = f"{TABLE_PREFIX}.facilities_enriched"
 VS_INDEX_NAME = f"{TABLE_PREFIX}.facilities_vs_index"
@@ -296,13 +307,7 @@ if results:
 
 # COMMAND ----------
 
-# Save VS config for other notebooks
-spark.conf.set("hackathon.vs_index", VS_INDEX_NAME)
-spark.conf.set("hackathon.fallback_mode", str(FALLBACK_MODE))
-
-print("=" * 60)
-print("VECTOR STORE COMPLETE")
-print("=" * 60)
+# Config for later use
 print(f"Index: {VS_INDEX_NAME}")
 print(f"Fallback mode: {FALLBACK_MODE}")
 print("Next: Run notebook 04_rag_chain")

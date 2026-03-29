@@ -26,14 +26,23 @@ from langchain_groq import ChatGroq
 from langchain.prompts import ChatPromptTemplate
 
 # Config
-CATALOG = spark.conf.get("hackathon.catalog", "hive_metastore")
-SCHEMA = spark.conf.get("hackathon.schema", "hackathon")
+# ============================================================
+# CONFIG: Must match what was set in 00_setup
+# ============================================================
+CATALOG = "hackathon_vf"
+SCHEMA = "healthcare"
 TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
-VS_ENDPOINT = spark.conf.get("hackathon.vs_endpoint", "vf_facility_search")
-VS_INDEX_NAME = spark.conf.get("hackathon.vs_index", f"{TABLE_PREFIX}.facilities_vs_index")
+VS_ENDPOINT = "vf_facility_search"
+VS_INDEX_NAME = f"{TABLE_PREFIX}.facilities_vs_index"
 
-spark.sql(f"USE CATALOG {CATALOG}")
-spark.sql(f"USE SCHEMA {SCHEMA}")
+try:
+    spark.sql(f"USE CATALOG {CATALOG}")
+    spark.sql(f"USE SCHEMA {SCHEMA}")
+except Exception:
+    CATALOG = "hive_metastore"
+    SCHEMA = "hackathon"
+    TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
+    VS_INDEX_NAME = f"{TABLE_PREFIX}.facilities_vs_index"
 
 # Load API key
 try:

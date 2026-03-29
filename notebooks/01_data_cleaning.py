@@ -23,14 +23,22 @@ import json
 from pyspark.sql import functions as F
 from pyspark.sql.types import StringType, IntegerType
 
-# Get config from setup notebook
-CATALOG = spark.conf.get("hackathon.catalog", "hive_metastore")
-SCHEMA = spark.conf.get("hackathon.schema", "hackathon")
-DATASET_PATH = spark.conf.get("hackathon.dataset_path", "/FileStore/tables/dataset.csv")
+# ============================================================
+# CONFIG: Must match what was set in 00_setup
+# ============================================================
+CATALOG = "hackathon_vf"
+SCHEMA = "healthcare"
+DATASET_PATH = "/FileStore/tables/dataset.csv"
 TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
 
-spark.sql(f"USE CATALOG {CATALOG}")
-spark.sql(f"USE SCHEMA {SCHEMA}")
+try:
+    spark.sql(f"USE CATALOG {CATALOG}")
+    spark.sql(f"USE SCHEMA {SCHEMA}")
+except Exception:
+    CATALOG = "hive_metastore"
+    SCHEMA = "hackathon"
+    TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
+    spark.sql(f"USE {SCHEMA}")
 
 print(f"Using: {TABLE_PREFIX}")
 print(f"Dataset: {DATASET_PATH}")

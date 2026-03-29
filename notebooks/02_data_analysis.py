@@ -21,12 +21,21 @@ import json
 from pyspark.sql import functions as F
 from pyspark.sql.types import IntegerType, BooleanType, StringType
 
-CATALOG = spark.conf.get("hackathon.catalog", "hive_metastore")
-SCHEMA = spark.conf.get("hackathon.schema", "hackathon")
+# ============================================================
+# CONFIG: Must match what was set in 00_setup
+# ============================================================
+CATALOG = "hackathon_vf"
+SCHEMA = "healthcare"
 TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
 
-spark.sql(f"USE CATALOG {CATALOG}")
-spark.sql(f"USE SCHEMA {SCHEMA}")
+try:
+    spark.sql(f"USE CATALOG {CATALOG}")
+    spark.sql(f"USE SCHEMA {SCHEMA}")
+except Exception:
+    CATALOG = "hive_metastore"
+    SCHEMA = "hackathon"
+    TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
+    spark.sql(f"USE {SCHEMA}")
 
 df = spark.table(f"{TABLE_PREFIX}.facilities_clean")
 total = df.count()

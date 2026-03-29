@@ -82,9 +82,6 @@ except Exception as e:
     print(f"Fallback: using {CATALOG_NAME}.{SCHEMA_NAME}")
     print(f"  (Unity Catalog not available: {e})")
 
-# Store for other notebooks
-spark.conf.set("hackathon.catalog", CATALOG_NAME)
-spark.conf.set("hackathon.schema", SCHEMA_NAME)
 TABLE_PREFIX = f"{CATALOG_NAME}.{SCHEMA_NAME}"
 print(f"Table prefix: {TABLE_PREFIX}")
 
@@ -122,8 +119,6 @@ if not DATASET_PATH:
     print("Dataset NOT found. Please upload dataset.csv to one of:")
     for p in possible_paths:
         print(f"  {p}")
-
-spark.conf.set("hackathon.dataset_path", DATASET_PATH or "")
 
 # COMMAND ----------
 
@@ -203,8 +198,6 @@ except Exception:
     except Exception as e:
         print(f"Could not create Vector Search endpoint: {e}")
         print("You may need to create it manually via the Databricks UI: Compute > Vector Search > Create")
-
-spark.conf.set("hackathon.vs_endpoint", VS_ENDPOINT_NAME)
 
 # COMMAND ----------
 
