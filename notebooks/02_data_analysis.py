@@ -38,6 +38,11 @@ except Exception:
     spark.sql(f"USE {SCHEMA}")
 
 df = spark.table(f"{TABLE_PREFIX}.facilities_clean")
+
+# Convert string 'null' to actual nulls and cast to integer
+df = df.withColumn("numberDoctors", F.when(F.col("numberDoctors") == "null", None).otherwise(F.col("numberDoctors").cast("int")))
+df = df.withColumn("capacity", F.when(F.col("capacity") == "null", None).otherwise(F.col("capacity").cast("int")))
+
 total = df.count()
 print(f"Loaded {total} clean facilities from {TABLE_PREFIX}.facilities_clean")
 

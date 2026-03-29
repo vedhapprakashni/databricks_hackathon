@@ -14,7 +14,21 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 4A. Load Vector Search Index and LLM
+# MAGIC ## 4A. Install Required Packages
+
+# COMMAND ----------
+
+%pip install -U typing-extensions pydantic
+%pip install langchain langchain-groq langchain-community databricks-vectorsearch mlflow sentence-transformers faiss-cpu
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 4B. Load Vector Search Index and LLM
 
 # COMMAND ----------
 

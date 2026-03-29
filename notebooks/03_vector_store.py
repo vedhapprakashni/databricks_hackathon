@@ -13,7 +13,21 @@
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3A. Configuration
+# MAGIC ## 3A. Install Required Packages
+
+# COMMAND ----------
+
+%pip install -U typing-extensions pydantic
+%pip install databricks-vectorsearch sentence-transformers
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3B. Configuration
 
 # COMMAND ----------
 
