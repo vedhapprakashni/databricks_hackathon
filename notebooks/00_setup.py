@@ -134,7 +134,7 @@ try:
     from langchain_groq import ChatGroq
     print("langchain-groq OK")
 
-    from langchain.prompts import ChatPromptTemplate
+    from langchain_core.prompts import ChatPromptTemplate
     print("langchain OK")
 
     from sentence_transformers import SentenceTransformer
