@@ -85,7 +85,7 @@ except Exception as e:
 
 # Initialize Groq LLM
 llm = ChatGroq(
-    model="llama-3.1-70b-versatile",
+    model="llama-3.3-70b-versatile",
     api_key=GROQ_API_KEY,
     temperature=0,
     max_tokens=2048
