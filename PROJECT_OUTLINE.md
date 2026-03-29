@@ -1,36 +1,39 @@
 # Bridging Medical Deserts: IDP Agent for the Virtue Foundation
-## Databricks Accenture Hackathon — Complete Project Outline
+## Databricks Accenture Hackathon -- Project Outline
 
 ---
 
 ## What This Project Is
 
-An AI-powered healthcare intelligence system built entirely on the Databricks platform that:
-1. Reads messy, unstructured hospital data from Ghana (provided by the Virtue Foundation)
-2. Extracts structured information using Intelligent Document Parsing (IDP)
-3. Identifies "medical deserts" — areas where people cannot access critical healthcare
-4. Helps NGO planners decide where to send doctors, equipment, and funding
+An AI-powered healthcare intelligence system built on the Databricks platform that:
+1. Ingests and deduplicates pre-parsed Ghana healthcare facility data from the Virtue Foundation
+2. Enables natural language querying over structured and unstructured facility data
+3. Detects anomalies and inconsistencies in facility claims
+4. Identifies medical deserts -- areas where people cannot access critical healthcare
+5. Helps NGO planners decide where to send doctors, equipment, and funding
 
 ---
 
-## Why Databricks Is Central
+## What We Are Working With
 
-This is a Databricks hackathon — every core component runs on or integrates with Databricks:
+### The Data is Already Parsed
 
-| Challenge Requirement | Databricks Solution |
-|---|---|
-| Data ingestion and storage | Unity Catalog + Delta Tables |
-| Unstructured text parsing (IDP) | Databricks Foundation Model APIs (Llama 3.1 via pay-per-token) or External Model Endpoints (Groq) |
-| Vector search for RAG | Databricks Vector Search (built into Unity Catalog) |
-| Agentic orchestration | Mosaic AI Agent Framework |
-| Experiment tracking and citations | MLflow (native to Databricks) |
-| SQL querying over data | Databricks SQL + Genie (Text2SQL) |
-| Serving the final agent | Databricks Model Serving |
-| Dashboards and visualization | Databricks SQL Dashboards + Lakeview |
+The Virtue Foundation already ran an IDP extraction pipeline (using Pydantic models + LLMs) to produce dataset.csv. The 4 Python files in prompts_and_pydantic_models/ show exactly how the data was created. Our job is NOT to re-extract from raw text -- it is to build an intelligent agent layer that reasons over this already-structured data.
+
+See DATASET_ANALYSIS.md for full dataset analysis including data quality issues and strategic insights.
+
+### Dataset Summary
+- 1,003 rows, ~400-500 unique facilities (duplicates from multiple source URLs)
+- 41 columns: structured (name, address, doctors, capacity) + free-text (procedure, equipment, capability)
+- All facilities in Ghana
+- Only ~20-30% have rich free-text data
+
+### Agent Questions (59 Total)
+The agent must answer 59 questions across 11 categories. About 16 are "Must Have" priority. See "Virtue Foundation Agent Questions - Hack Nation.md" for full list.
 
 ---
 
-## Databricks-Centric Architecture
+## Architecture (Databricks-Centric)
 
 ```
 +------------------------------------------------------+
@@ -40,97 +43,143 @@ This is a Databricks hackathon — every core component runs on or integrates wi
 +-------------------------+----------------------------+
                           |
 +-------------------------v----------------------------+
-|          MOSAIC AI AGENT FRAMEWORK                    |
-|          (Agentic Orchestration Layer)                |
+|             SUPERVISOR AGENT (Router)                 |
+|         Routes queries to the right sub-agent         |
 |                                                      |
 |  +----------+  +----------+  +--------------------+  |
-|  | IDP Agent|  | Analysis |  | Planning/Recommend |  |
-|  | (Parser) |  |  Agent   |  |      Agent         |  |
+|  | Genie    |  | Vector   |  | Medical Reasoning  |  |
+|  | Text2SQL |  | Search   |  |     Agent           |  |
 |  +----+-----+  +----+-----+  +---------+----------+  |
-+-------|--------------|-----------------------|-------+
-        |              |                       |
-+-------v--------------v-----------------------v-------+
+|       |              |                   |            |
+|  Structured     Free-text          Complex reasoning  |
+|  queries        semantic search    + anomaly detect   |
++---------|------------|-------------------|------------+
+          |            |                   |
++---------v------------v-------------------v------------+
 |              DATABRICKS LAKEHOUSE                     |
 |                                                      |
 |  +----------------+  +---------------------------+   |
 |  | Delta Tables   |  | Databricks Vector Search  |   |
-|  | (Raw + Parsed  |  | (Embeddings for RAG)      |   |
-|  |  Facility Data)|  |                           |   |
+|  | (Deduplicated  |  | (Embeddings over          |   |
+|  |  Facility Data)|  |  procedure/equip/capab)   |   |
 |  +----------------+  +---------------------------+   |
 |                                                      |
 |  +----------------+  +---------------------------+   |
 |  | Unity Catalog  |  | MLflow Experiment Tracking |   |
 |  | (Governance)   |  | (Agent tracing, citations) |   |
 |  +----------------+  +---------------------------+   |
-|                                                      |
-|  +----------------+  +---------------------------+   |
-|  | Genie          |  | Foundation Model APIs     |   |
-|  | (Text2SQL)     |  | (LLM access for agents)   |   |
-|  +----------------+  +---------------------------+   |
 +------------------------------------------------------+
 ```
 
 ---
 
-## Key Concepts
+## Implementation Plan (5 Days)
 
-| Concept | What It Means | Databricks Feature |
-|---|---|---|
-| IDP (Intelligent Document Parsing) | Using AI to extract structured data from messy text | Foundation Model APIs + Notebooks |
-| RAG (Retrieval-Augmented Generation) | Feeding relevant documents to an LLM for answers | Databricks Vector Search |
-| Agentic AI | AI that plans, reasons, and takes multi-step actions | Mosaic AI Agent Framework |
-| Vector Database | Stores text as numbers for semantic search | Databricks Vector Search in Unity Catalog |
-| Text2SQL | Converting natural language to SQL queries | Genie |
-| Experiment Tracking | Logging model inputs/outputs for transparency | MLflow (native in Databricks) |
+### Phase 1: Data Ingestion and Cleaning (Day 1 -- 3-4 hours)
 
----
+#### Step 1.1 -- Databricks Workspace Setup
+- Databricks Community Edition workspace
+- Cluster configuration
+- Groq API key stored as Databricks secret
 
-## Step-by-Step Implementation Plan
+#### Step 1.2 -- Data Cleaning and Deduplication
+The dataset has duplicate rows for the same facility from different source URLs. This is the critical first step.
 
-### Phase 1: Databricks Setup and Data Ingestion (Day 1 — 3-4 hours)
-
-#### Step 1.1 — Databricks Workspace Setup
-- Create a Databricks Community Edition workspace at community.cloud.databricks.com
-- Create a cluster (Community Edition gives a single-node cluster)
-- Set up Unity Catalog (if available on Community Edition, otherwise use Hive metastore)
-- Configure Groq API key as a Databricks secret:
-  ```python
-  # In Databricks notebook
-  dbutils.secrets.createScope("hackathon")
-  # Store GROQ_API_KEY in the secret scope
-  ```
-
-#### Step 1.2 — Ingest Ghana Dataset into Delta Tables
 ```python
-# Load CSV into Databricks and store as Delta Table
-df = spark.read.csv("/FileStore/ghana_facilities.csv", header=True, inferSchema=True)
-df.write.format("delta").saveAsTable("hackathon.virtue_foundation.raw_facilities")
-
-# Explore the data
-display(df.describe())
-display(df.select("procedure", "equipment", "capability").limit(10))
+# Group by pk_unique_id (unique facility identifier)
+# Merge multiple rows into one consolidated record per facility
+# Combine free-text fields from all source URLs
+# Store as clean Delta table
+df_clean = (
+    spark.read.csv("/FileStore/dataset.csv", header=True)
+    .groupBy("pk_unique_id")
+    .agg(...)  # merge logic
+)
+df_clean.write.format("delta").saveAsTable("hackathon.vf.facilities_clean")
 ```
 
-#### Step 1.3 — Data Profiling
-- Use Databricks Data Profile feature on the Delta table
-- Identify structured vs unstructured columns
-- Assess data quality: nulls, inconsistencies, duplicates
+#### Step 1.3 -- Data Profiling
+- Use Databricks Data Profile on the Delta table
+- Identify nulls, distribution of specialties, regional coverage
 
 ---
 
-### Phase 2: IDP Agent — Document Parsing on Databricks (Day 1-2 — 6-8 hours)
+### Phase 2: Genie / Text2SQL Agent (Day 2 -- 4-5 hours)
 
-> Core of the project — 30% of evaluation (IDP Innovation)
+> Handles most "Must Have" questions -- the backbone of the system
 
-#### Step 2.1 — Configure LLM Access in Databricks
-Two options:
-- Option A: Databricks Foundation Model APIs (built-in, pay-per-token)
-- Option B: External Model Endpoint pointing to Groq API
+This handles all structured queries mapped to "Genie Chat" in the questions doc:
+- "How many hospitals have cardiology?"
+- "Which region has the most [Type] hospitals?"
+- "Which facilities claim unrealistic procedures relative to size?"
+- Correlation queries between facility characteristics
 
+#### Step 2.1 -- Set Up Genie Space
+- Create a Genie space in Databricks SQL pointing to the facilities Delta table
+- Configure column descriptions and table context
+- Test with basic queries
+
+#### Step 2.2 -- SQL-based Anomaly Detection
+```sql
+-- Example: Facilities with mismatched claims
+SELECT name, address_stateOrRegion, numberDoctors, capacity,
+       size(procedure) as num_procedures,
+       size(equipment) as num_equipment
+FROM hackathon.vf.facilities_clean
+WHERE size(procedure) > 10 AND (numberDoctors IS NULL OR numberDoctors < 2)
+```
+
+---
+
+### Phase 3: Vector Search for Free-Text Queries (Day 2-3 -- 4-5 hours)
+
+> Handles semantic search over procedure, equipment, capability fields
+
+#### Step 3.1 -- Create Combined Text Column
 ```python
-# Option B: Register Groq as an external model endpoint
-import mlflow.deployments
+# Create a searchable text column combining all free-text fields
+df_with_text = df_clean.withColumn(
+    "combined_text",
+    concat_ws(" | ",
+        col("name"), col("description"),
+        col("procedure"), col("equipment"), col("capability"),
+        col("specialties")
+    )
+)
+```
 
+#### Step 3.2 -- Databricks Vector Search Index
+```python
+from databricks.vector_search.client import VectorSearchClient
+
+vsc = VectorSearchClient()
+vsc.create_endpoint(name="facility-search")
+vsc.create_delta_sync_index(
+    endpoint_name="facility-search",
+    source_table_name="hackathon.vf.facilities_searchable",
+    primary_key="pk_unique_id",
+    embedding_source_column="combined_text",
+    embedding_model_endpoint_name="databricks-bge-large-en"
+)
+```
+
+#### Step 3.3 -- RAG Chain with Citations
+```python
+# Query vector index, pass results to LLM, return answer with source citations
+results = index.similarity_search(query_text="hospitals with CT scanners", num_results=5)
+# Each result includes pk_unique_id for row-level citation
+```
+
+---
+
+### Phase 4: Medical Reasoning Agent (Day 3 -- 5-6 hours)
+
+> Handles anomaly detection and complex medical inference
+
+#### Step 4.1 -- Configure LLM Access
+```python
+# Register Groq (Llama 3.1 70B) as external model endpoint
+import mlflow.deployments
 client = mlflow.deployments.get_deploy_client("databricks")
 client.create_endpoint(
     name="groq-llama",
@@ -150,316 +199,159 @@ client.create_endpoint(
 )
 ```
 
-#### Step 2.2 — Build IDP Extraction Pipeline
-Use Databricks notebooks with Pydantic models for structured extraction:
+#### Step 4.2 -- Medical Reasoning Capabilities
+The reasoning agent handles questions like:
+- "Which facilities claim to offer [subspecialty] but lack required equipment?"
+- "Which facilities have high bed-to-OR ratios indicative of misrepresentation?"
+- "Where do we see things that should not move together?"
 
 ```python
-from pydantic import BaseModel
-from typing import List
+# Example: Cross-validate procedure claims against equipment
+medical_prompt = """
+Given this facility data:
+- Name: {name}
+- Claimed procedures: {procedures}
+- Listed equipment: {equipment}
+- Capacity: {capacity} beds
+- Doctors: {num_doctors}
 
-class FacilityExtraction(BaseModel):
-    procedures: List[str]
-    equipment: List[str]
-    capabilities: List[str]
-    specialties: List[str]
-    has_emergency: bool
-    has_surgery: bool
-    has_imaging: bool
-    anomalies: List[str]       # Suspicious or inconsistent claims
-
-# Process each facility row through the LLM
-# Parse free-text fields (procedure, equipment, capability)
-# Store structured output back to a Delta table
+Identify any anomalies or inconsistencies. Consider:
+1. Are procedures claimed without necessary equipment?
+2. Is the procedure count realistic for the facility size?
+3. Are there mismatches between specialties and infrastructure?
+"""
 ```
 
-#### Step 2.3 — Anomaly Detection
-Flag facilities with suspicious data:
-- Claims advanced equipment but has 0 doctors
-- Says "Level II trauma center" but no emergency capability
-- Has massive capacity but tiny facility area
-
-#### Step 2.4 — Store Parsed Results in Delta Tables
-```python
-# Save structured extractions as a new Delta table
-parsed_df.write.format("delta").saveAsTable("hackathon.virtue_foundation.parsed_facilities")
-```
-
----
-
-### Phase 3: RAG System with Databricks Vector Search (Day 2-3 — 4-5 hours)
-
-> Powers the 35% Technical Accuracy score
-
-#### Step 3.1 — Create Embeddings and Vector Search Index
-```python
-# Use Databricks Vector Search (built into Unity Catalog)
-from databricks.vector_search.client import VectorSearchClient
-
-vsc = VectorSearchClient()
-
-# Create a vector search endpoint
-vsc.create_endpoint(name="facility-search-endpoint")
-
-# Create a Delta Sync Index (auto-syncs with your Delta table)
-vsc.create_delta_sync_index(
-    endpoint_name="facility-search-endpoint",
-    index_name="hackathon.virtue_foundation.facility_index",
-    source_table_name="hackathon.virtue_foundation.parsed_facilities",
-    pipeline_type="TRIGGERED",
-    primary_key="facility_id",
-    embedding_source_column="combined_text",
-    embedding_model_endpoint_name="databricks-bge-large-en"
-)
-```
-
-#### Step 3.2 — Build RAG Chain
-```python
-# Query the vector index for relevant facilities
-results = vsc.get_index("hackathon.virtue_foundation.facility_index").similarity_search(
-    query_text="hospitals with CT scanners in Northern Ghana",
-    columns=["name", "address_city", "equipment", "capability"],
-    num_results=5
-)
-
-# Feed results to LLM for natural language answer with citations
-```
-
-#### Step 3.3 — Add Citations
-Each answer includes which facility records were used:
-- Return source document IDs and row references
-- Use MLflow tracing to log each reasoning step for agentic-step-level citations
-
----
-
-### Phase 4: Agentic Orchestration with Mosaic AI (Day 3 — 5-6 hours)
-
-#### Step 4.1 — Define Agent Tools
-
-| Tool | Purpose |
-|---|---|
-| search_facilities | Databricks Vector Search query |
-| get_facility_details | SQL query on Delta table |
-| analyze_region | Aggregated stats via Spark SQL |
-| identify_gaps | Find medical deserts using geospatial analysis |
-| detect_anomalies | Flag suspicious facility claims |
-| text2sql_query | Genie-powered natural language to SQL |
-
-#### Step 4.2 — Build with Mosaic AI Agent Framework
-```python
-# Use Mosaic AI Agent Framework (or LangGraph running on Databricks)
-from databricks.agents import Agent, Tool
-
-agent = Agent(
-    model_endpoint="groq-llama",
-    tools=[
-        search_facilities_tool,
-        analyze_region_tool,
-        identify_gaps_tool,
-        detect_anomalies_tool,
-    ],
-    instructions="You are a healthcare intelligence agent..."
-)
-
-# Register and deploy the agent
-mlflow.pyfunc.log_model(
-    artifact_path="healthcare-agent",
-    python_model=agent,
-    registered_model_name="hackathon.virtue_foundation.idp_agent"
-)
-```
-
-#### Step 4.3 — MLflow Tracing for Transparency
+#### Step 4.3 -- MLflow Tracing for Citations
 ```python
 import mlflow
+mlflow.set_experiment("/hackathon/medical-reasoning")
 
-# Enable automatic tracing
-mlflow.set_experiment("/hackathon/idp-agent")
-
-with mlflow.start_run():
-    # Each agent step is automatically logged
-    # Provides step-level citations for the stretch goal
-    result = agent.invoke(user_query)
-    mlflow.log_param("query", user_query)
-    mlflow.log_metric("num_sources", len(result.sources))
+# Each agent reasoning step is logged
+# Provides step-level citations (stretch goal)
 ```
-
-#### Step 4.4 — Genie for Text2SQL
-- Set up Genie space in Databricks SQL pointing to your Delta tables
-- Allows non-technical users to query: "How many hospitals in Ashanti Region have more than 50 beds?"
-- Genie translates to SQL automatically
 
 ---
 
-### Phase 5: Medical Desert Identification (Day 4 — 3-4 hours)
+### Phase 5: Supervisor Agent + Integration (Day 4 -- 4-5 hours)
 
-> Worth 25% of evaluation (Social Impact)
-
-#### Step 5.1 — Define Medical Desert Criteria
-- No facility within X km has a specific capability (surgery, imaging)
-- Doctor-to-population ratio is critically low
-- No emergency services available
-
-#### Step 5.2 — Geospatial Analysis on Databricks
+#### Step 5.1 -- Build Supervisor Router
 ```python
-# Use Spark SQL for geographic analysis
+# Supervisor Agent: classifies query intent and routes to sub-agent
+# Intent categories:
+#   - STRUCTURED -> Genie (Text2SQL)
+#   - SEMANTIC_SEARCH -> Vector Search
+#   - REASONING -> Medical Reasoning Agent
+#   - GEOSPATIAL -> Geospatial calculation + Genie
+#   - MULTI_STEP -> Chain multiple sub-agents
+```
+
+#### Step 5.2 -- Agent Tools
+
+| Tool | Maps To | Handles |
+|---|---|---|
+| text2sql_query | Genie Chat | Structured queries, counts, aggregations |
+| semantic_search | Vector Search | Free-text facility lookups |
+| medical_reason | Reasoning Agent | Anomaly detection, inference |
+| geo_distance | Geospatial Calc | Distance and coverage queries |
+| get_facility | Delta Table lookup | Single facility details |
+
+---
+
+### Phase 6: Medical Deserts + Visualization (Day 4-5 -- 3-4 hours)
+
+#### Step 6.1 -- Medical Desert Analysis
+```python
+# Aggregate by region, identify gaps
 spark.sql("""
     SELECT address_stateOrRegion AS region,
-           COUNT(*) AS facility_count,
+           COUNT(DISTINCT pk_unique_id) AS facility_count,
            SUM(numberDoctors) AS total_doctors,
            SUM(capacity) AS total_beds,
-           SUM(CASE WHEN has_emergency THEN 1 ELSE 0 END) AS emergency_capable,
-           SUM(CASE WHEN has_surgery THEN 1 ELSE 0 END) AS surgery_capable
-    FROM hackathon.virtue_foundation.parsed_facilities
+           COLLECT_SET(specialties) AS available_specialties
+    FROM hackathon.vf.facilities_clean
     GROUP BY address_stateOrRegion
     ORDER BY facility_count ASC
 """)
 ```
 
-#### Step 5.3 — Visualize with Map
-- Use Databricks SQL Dashboard map widgets for in-platform visualization
-- Alternatively, generate a Folium map in a notebook and export as HTML
+#### Step 6.2 -- Map Visualization
+- Databricks SQL Dashboard with map widget or Folium map in notebook
+- Color-coded markers by facility type and capability
+- Highlighted desert regions
 
 ---
 
-### Phase 6: Dashboard and User Interface (Day 4-5 — 3-4 hours)
+### Phase 7: Polish and Demo (Day 5 -- 3-4 hours)
 
-> Worth 10% but makes a huge impression on judges
-
-#### Option A: Databricks SQL Dashboard (Recommended — stays in-platform)
-- Create a Lakeview dashboard with:
-  - Map widget showing facility locations color-coded by capability
-  - Bar charts for regional statistics
-  - Counter widgets for key metrics (total facilities, medical deserts, anomalies)
-  - Filter widgets for region, specialty, capability
-
-#### Option B: Streamlit App (For richer interactivity)
-```python
-import streamlit as st
-
-st.title("Healthcare Intelligence Dashboard")
-st.subheader("Virtue Foundation — Ghana")
-
-query = st.text_input("Ask about healthcare facilities...")
-
-tab1, tab2, tab3 = st.tabs(["Map", "Analysis", "Search"])
-
-with tab1:
-    # Interactive Folium map
-    st_folium(map_object)
-
-with tab2:
-    # Charts from Databricks query results
-    st.bar_chart(regional_stats)
-
-with tab3:
-    # RAG search results with citations
-    if query:
-        result = agent.invoke(query)
-        st.write(result)
-```
+- Build Databricks SQL Dashboard / Lakeview dashboard
+- Finalize and test all Must-Have queries
+- Record 5-minute demo video
+- Write README with clear setup instructions
+- Ensure GitHub repo has open-source license
 
 ---
 
-## Suggested Project Structure
+## Databricks Features Utilization
 
-```
-databricks-hackathon/
-|-- README.md
-|-- PROJECT_OUTLINE.md
-|-- requirements.txt
-|-- data/
-|   +-- ghana_facilities.csv
-|-- notebooks/                         # Databricks notebooks
-|   |-- 01_data_ingestion.py           # Load data into Delta tables
-|   |-- 02_idp_extraction.py           # IDP agent for parsing
-|   |-- 03_vector_search_setup.py      # Databricks Vector Search
-|   |-- 04_rag_chain.py                # RAG pipeline
-|   |-- 05_agent_orchestration.py      # Mosaic AI Agent
-|   |-- 06_medical_deserts.py          # Gap analysis
-|   +-- 07_exploration.ipynb           # Data exploration
-|-- src/
-|   |-- idp/
-|   |   |-- extractor.py               # IDP extraction logic
-|   |   |-- models.py                  # Pydantic models
-|   |   +-- anomaly_detector.py        # Anomaly detection
-|   |-- rag/
-|   |   |-- vectorstore.py             # Vector Search integration
-|   |   +-- chain.py                   # RAG chain
-|   |-- agents/
-|   |   |-- orchestrator.py            # Agent framework
-|   |   +-- tools.py                   # Agent tools
-|   +-- analysis/
-|       |-- medical_deserts.py         # Desert identification
-|       +-- gap_analysis.py            # Gap analysis
-|-- app.py                              # Streamlit app (if used)
-+-- tests/
-    +-- test_extractor.py
-```
-
----
-
-## Databricks Features Utilization Map
-
-| Databricks Feature | How We Use It | Challenge Requirement |
+| Databricks Feature | How We Use It | Evaluation Area |
 |---|---|---|
-| Delta Tables (Unity Catalog) | Store raw and parsed facility data | Data management |
-| Foundation Model APIs / External Endpoints | LLM access for IDP extraction | IDP Innovation (30%) |
-| Databricks Vector Search | Semantic search over facility data for RAG | Technical Accuracy (35%) |
-| Mosaic AI Agent Framework | Orchestrate multi-step reasoning agents | Technical Accuracy (35%) |
-| MLflow Tracking + Tracing | Log agent steps, provide citations | Citations (stretch goal) |
-| Genie (Text2SQL) | Natural language queries over structured data | User Experience (10%) |
-| Databricks SQL Dashboards / Lakeview | Visualize medical deserts and facility coverage | Social Impact (25%) |
-| Databricks Secrets | Store API keys securely (Groq) | Best practice |
+| Delta Tables (Unity Catalog) | Store deduplicated facility data | Foundation |
+| Genie (Text2SQL) | Natural language to SQL for structured queries | Technical Accuracy (35%) |
+| Databricks Vector Search | Semantic search over free-text fields | IDP Innovation (30%) |
+| External Model Endpoints | Groq/Llama 3.1 for reasoning agent | IDP Innovation (30%) |
+| MLflow Tracking + Tracing | Agent step logging, citations | Citations (stretch) |
 | Spark SQL | Geospatial aggregation and gap analysis | Social Impact (25%) |
+| SQL Dashboards / Lakeview | Visualize medical deserts and coverage | User Experience (10%) |
+| Databricks Secrets | Secure API key storage | Best practice |
 
 ---
 
-## Prioritization Strategy
+## Prioritization
 
-| Priority | Component | Evaluation Weight | Time Estimate |
+| Priority | Component | Evaluation Weight | Time |
 |---|---|---|---|
-| P0 (Critical) | Data ingestion into Delta Tables | Foundation | 2 hrs |
-| P0 (Critical) | IDP Extraction via Databricks LLM endpoints | 30% | 6-8 hrs |
-| P0 (Critical) | RAG with Databricks Vector Search | 35% | 4-5 hrs |
-| P1 (Important) | Medical Desert Analysis with Spark SQL | 25% | 3-4 hrs |
-| P1 (Important) | Anomaly Detection | Part of 35% | 2-3 hrs |
-| P2 (Nice to have) | Databricks SQL Dashboard + Map | 10% | 3-4 hrs |
-| P2 (Nice to have) | MLflow Tracing for Citations | Bonus | 2 hrs |
-| P3 (Stretch) | Genie Text2SQL Integration | Bonus | 2 hrs |
-| P3 (Stretch) | Mosaic AI Agent Deployment | Bonus | 3 hrs |
+| P0 | Data cleaning + deduplication into Delta Tables | Foundation | 3-4 hrs |
+| P0 | Genie / Text2SQL for structured queries | 35% Technical Accuracy | 4-5 hrs |
+| P0 | Vector Search for free-text queries | 30% IDP Innovation | 4-5 hrs |
+| P1 | Medical Reasoning Agent (anomalies) | Part of 35% + 30% | 5-6 hrs |
+| P1 | Supervisor Agent (routing) | Part of 35% | 2-3 hrs |
+| P1 | Medical Desert analysis | 25% Social Impact | 3-4 hrs |
+| P2 | Dashboard / Map visualization | 10% UX | 3-4 hrs |
+| P2 | MLflow tracing for citations | Bonus | 2 hrs |
+| P3 | Geospatial distance calculations | Bonus | 2 hrs |
 
 ---
 
 ## 5-Day Timeline
 
-| Day | Focus | Databricks Features Used |
+| Day | Focus | Deliverables |
 |---|---|---|
-| Day 1 (Mar 29) | Workspace setup + Data ingestion into Delta Tables | Unity Catalog, Delta Tables, Clusters |
-| Day 2 (Mar 30) | IDP Extraction Pipeline | Foundation Model APIs / External Endpoints, MLflow |
-| Day 3 (Mar 31) | RAG + Agent Orchestration | Vector Search, Mosaic AI Agent Framework |
-| Day 4 (Apr 1) | Medical Deserts + Visualization | Spark SQL, SQL Dashboards, Lakeview |
-| Day 5 (Apr 2) | Polish, Testing, Demo Video | MLflow, Genie, Documentation |
+| Day 1 (Mar 29) | Workspace setup + Data cleaning + dedup | Clean Delta tables ready |
+| Day 2 (Mar 30) | Genie Text2SQL + Vector Search setup | Working structured + semantic queries |
+| Day 3 (Mar 31) | Medical Reasoning Agent + anomaly detection | Complex query handling |
+| Day 4 (Apr 1) | Supervisor Agent + Medical Deserts + Map | Full agent pipeline + visualization |
+| Day 5 (Apr 2) | Dashboard + Testing + Demo Video | Submission-ready project |
 
 ---
 
-## Tech Stack (All Databricks-Centered)
+## Tech Stack
 
 | Layer | Technology | Notes |
 |---|---|---|
 | Platform | Databricks Community Edition | Required by challenge |
-| Data Storage | Delta Tables in Unity Catalog | Structured + parsed data |
-| LLM Access | Groq (Llama 3.1 70B) via External Endpoint | Free tier, fast inference |
+| Data Storage | Delta Tables in Unity Catalog | Deduplicated facility data |
+| LLM | Groq (Llama 3.1 70B) via External Endpoint | Free, fast inference |
 | Embeddings | Databricks BGE or HuggingFace all-MiniLM-L6-v2 | For vector search |
 | Vector Search | Databricks Vector Search | Native RAG support |
-| Agent Framework | Mosaic AI Agent Framework / LangGraph on Databricks | Agentic orchestration |
+| Text2SQL | Genie | Structured query backbone |
+| Agent Framework | Mosaic AI Agent Framework / LangGraph | Orchestration |
 | Experiment Tracking | MLflow (native) | Citations and tracing |
-| Text2SQL | Genie | Natural language querying |
-| Dashboards | Databricks SQL Dashboard / Lakeview | In-platform visualization |
-| Optional UI | Streamlit (deployed externally) | If richer interactivity needed |
+| Dashboards | Databricks SQL Dashboard / Lakeview | Visualization |
 
 ---
 
-## Submission Requirements Checklist
+## Submission Checklist
 
 - [ ] Built using required Databricks tools during hackathon period
 - [ ] Clear text description explaining features and functionality
@@ -469,14 +361,37 @@ databricks-hackathon/
 
 ---
 
-## Common Pitfalls to Avoid
+## Project Structure
 
-- Do not build everything outside Databricks — judges expect Databricks usage
-- Do not ignore the free-text fields — they are the core of IDP and worth 30%
-- Do not skip citations — easy points, return source documents with MLflow tracing
-- Do not forget the social impact story — judges care about "why it matters"
-- Do not run expensive operations on all data first — test on 5-10 rows, then scale
-- Do not build UI first — get the AI pipeline working on Databricks, then add the dashboard
+```
+databricks-hackathon/
+|-- README.md
+|-- PROJECT_OUTLINE.md
+|-- DATASET_ANALYSIS.md
+|-- requirements.txt
+|-- data/
+|   +-- dataset.csv
+|-- prompts_and_pydantic_models/        # VF extraction pipeline (reference)
+|-- notebooks/                          # Databricks notebooks
+|   |-- 01_data_cleaning.py             # Dedup + load into Delta tables
+|   |-- 02_genie_setup.py               # Genie Text2SQL configuration
+|   |-- 03_vector_search.py             # Vector Search index creation
+|   |-- 04_reasoning_agent.py           # Medical Reasoning Agent
+|   |-- 05_supervisor_agent.py          # Router + orchestration
+|   |-- 06_medical_deserts.py           # Gap analysis
+|   +-- 07_dashboard.py                 # Visualization
+|-- src/
+|   |-- agents/
+|   |   |-- supervisor.py               # Query router
+|   |   |-- medical_reasoner.py         # Medical reasoning
+|   |   +-- tools.py                    # Agent tools
+|   |-- analysis/
+|   |   |-- anomaly_detector.py         # Anomaly detection logic
+|   |   +-- medical_deserts.py          # Desert identification
+|   +-- data/
+|       +-- deduplicator.py             # Data cleaning logic
++-- app.py                               # Streamlit app (optional)
+```
 
 ---
 
@@ -488,9 +403,6 @@ databricks-hackathon/
 | Databricks Vector Search | https://docs.databricks.com/en/generative-ai/vector-search.html |
 | Mosaic AI Agent Framework | https://docs.databricks.com/en/generative-ai/agent-framework/index.html |
 | MLflow on Databricks | https://docs.databricks.com/en/mlflow/index.html |
-| Databricks SQL Dashboards | https://docs.databricks.com/en/dashboards/index.html |
 | Genie (Text2SQL) | https://docs.databricks.com/en/genie/index.html |
 | Delta Tables | https://docs.databricks.com/en/delta/index.html |
-| Unity Catalog | https://docs.databricks.com/en/data-governance/unity-catalog/index.html |
-| LangGraph on Databricks | https://docs.databricks.com/en/generative-ai/agent-framework/langgraph.html |
 | Groq API | https://console.groq.com/docs/quickstart |
