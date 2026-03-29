@@ -4,9 +4,11 @@
 # MAGIC
 # MAGIC This notebook:
 # MAGIC 1. Loads the raw dataset.csv
-# MAGIC 2. Deduplicates facilities (same facility appears multiple times from different source URLs)
+# MAGIC 2. Deduplicates facilities (same facility appears from multiple source URLs)
 # MAGIC 3. Merges data from multiple rows into one consolidated record per facility
-# MAGIC 4. Creates a clean Delta table ready for querying
+# MAGIC 4. Creates a search_text column for embeddings
+# MAGIC 5. Saves clean data as a managed Delta table in Unity Catalog
+# MAGIC 6. Enables Change Data Feed for Vector Search sync
 # MAGIC
 # MAGIC **Run notebook 00_setup first!**
 
@@ -19,11 +21,23 @@
 
 import json
 from pyspark.sql import functions as F
-from pyspark.sql.types import ArrayType, StringType, IntegerType
+from pyspark.sql.types import StringType, IntegerType
+
+# Get config from setup notebook
+CATALOG = spark.conf.get("hackathon.catalog", "hive_metastore")
+SCHEMA = spark.conf.get("hackathon.schema", "hackathon")
+DATASET_PATH = spark.conf.get("hackathon.dataset_path", "/FileStore/tables/dataset.csv")
+TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
+
+spark.sql(f"USE CATALOG {CATALOG}")
+spark.sql(f"USE SCHEMA {SCHEMA}")
+
+print(f"Using: {TABLE_PREFIX}")
+print(f"Dataset: {DATASET_PATH}")
+
+# COMMAND ----------
 
 # Load the CSV
-DATASET_PATH = "/FileStore/tables/dataset.csv"
-
 df_raw = (
     spark.read
     .option("header", "true")
@@ -43,14 +57,12 @@ print(f"Total columns: {len(df_raw.columns)}")
 
 # COMMAND ----------
 
-# Show column names
 print("Columns:")
 for i, col in enumerate(df_raw.columns):
     print(f"  {i+1}. {col}")
 
 # COMMAND ----------
 
-# Basic stats
 total_rows = df_raw.count()
 unique_facilities = df_raw.select("pk_unique_id").distinct().count()
 org_types = df_raw.groupBy("organization_type").count().collect()
@@ -64,35 +76,23 @@ for row in org_types:
 
 # COMMAND ----------
 
-# Facility type distribution
 print("Facility types:")
 df_raw.groupBy("facilityTypeId").count().orderBy("count", ascending=False).show(10, truncate=False)
 
-# COMMAND ----------
-
-# Regional distribution
-print("Facilities by region:")
+print("\nFacilities by region:")
 df_raw.groupBy("address_stateOrRegion").count().orderBy("count", ascending=False).show(20, truncate=False)
 
 # COMMAND ----------
 
-# How many rows have actual procedure/equipment/capability data?
+# How many rows have actual free-text data?
 has_procedure = df_raw.filter(
-    (F.col("procedure").isNotNull()) & 
-    (F.col("procedure") != "null") & 
-    (F.col("procedure") != "[]")
+    (F.col("procedure").isNotNull()) & (F.col("procedure") != "null") & (F.col("procedure") != "[]")
 ).count()
-
 has_equipment = df_raw.filter(
-    (F.col("equipment").isNotNull()) & 
-    (F.col("equipment") != "null") & 
-    (F.col("equipment") != "[]")
+    (F.col("equipment").isNotNull()) & (F.col("equipment") != "null") & (F.col("equipment") != "[]")
 ).count()
-
 has_capability = df_raw.filter(
-    (F.col("capability").isNotNull()) & 
-    (F.col("capability") != "null") & 
-    (F.col("capability") != "[]")
+    (F.col("capability").isNotNull()) & (F.col("capability") != "null") & (F.col("capability") != "[]")
 ).count()
 
 print(f"Rows with procedure data: {has_procedure} / {total_rows} ({100*has_procedure//total_rows}%)")
@@ -104,109 +104,14 @@ print(f"Rows with capability data: {has_capability} / {total_rows} ({100*has_cap
 # MAGIC %md
 # MAGIC ## 1C. Deduplication Logic
 # MAGIC
-# MAGIC The same facility (same `pk_unique_id`) can appear multiple times because it was
-# MAGIC scraped from different websites. We need to:
-# MAGIC 1. Group by `pk_unique_id`
-# MAGIC 2. For single-value fields: take the first non-null value
-# MAGIC 3. For list/text fields: collect and combine all unique values
-# MAGIC 4. Collect all source URLs for citation
+# MAGIC Group by `pk_unique_id` and merge:
+# MAGIC - Single-value fields: first non-null
+# MAGIC - Array/text fields: combine all unique values
+# MAGIC - Collect all source URLs for citation
 
 # COMMAND ----------
 
-from pyspark.sql import Window
-from pyspark.sql import functions as F
-
-# Helper: UDF to merge JSON array strings
-# e.g. merge '["a","b"]' and '["b","c"]' into '["a","b","c"]'
-@F.udf(StringType())
-def merge_json_arrays(*arrays):
-    """Merge multiple JSON array strings into one deduplicated list."""
-    merged = set()
-    for arr_str in arrays:
-        if arr_str and arr_str not in ("null", "[]", "[\"\"]\n", "[\"\"]"):
-            try:
-                items = json.loads(arr_str)
-                if isinstance(items, list):
-                    for item in items:
-                        if item and str(item).strip():
-                            merged.add(str(item).strip())
-            except (json.JSONDecodeError, TypeError):
-                # If it's not valid JSON, treat as plain text
-                if str(arr_str).strip():
-                    merged.add(str(arr_str).strip())
-    if not merged:
-        return "[]"
-    return json.dumps(sorted(list(merged)))
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Deduplication: Group by pk_unique_id and merge
-
-# COMMAND ----------
-
-# For single-value fields, take first non-null
-# For array fields, collect all and merge
-
-# Single-value fields (take first non-null)
-single_fields = [
-    "name", "organization_type", "email", "officialWebsite", "officialPhone",
-    "yearEstablished", "acceptsVolunteers", "facebookLink", "twitterLink",
-    "linkedinLink", "instagramLink", "logo",
-    "address_line1", "address_line2", "address_line3",
-    "address_city", "address_stateOrRegion", "address_zipOrPostcode",
-    "address_country", "address_countryCode",
-    "facilityTypeId", "operatorTypeId", "description",
-    "area", "numberDoctors", "capacity",
-    "missionStatement", "missionStatementLink", "organizationDescription",
-    "mongo DB"
-]
-
-# Array/text fields (merge all values)
-merge_fields = [
-    "specialties", "procedure", "equipment", "capability",
-    "phone_numbers", "websites", "affiliationTypeIds", "countries"
-]
-
-# Build aggregation expressions
-agg_exprs = []
-
-# Single fields: first non-null
-for field in single_fields:
-    if field in df_raw.columns:
-        agg_exprs.append(F.first(F.col(field), ignorenulls=True).alias(field))
-
-# Collect source URLs
-agg_exprs.append(
-    F.collect_set("source_url").cast("string").alias("source_urls")
-)
-
-# Count how many source pages this facility appeared on
-agg_exprs.append(
-    F.count("*").alias("source_count")
-)
-
-# For merge fields, collect all values
-for field in merge_fields:
-    if field in df_raw.columns:
-        agg_exprs.append(
-            F.collect_list(field).alias(f"_{field}_raw")
-        )
-
-# Group by pk_unique_id and aggregate
-df_grouped = df_raw.groupBy("pk_unique_id").agg(*agg_exprs)
-
-print(f"After dedup: {df_grouped.count()} unique facilities")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Merge the collected array fields
-
-# COMMAND ----------
-
-# Now merge the collected arrays for each merge field
-# We need a UDF that takes an array of JSON-array-strings and merges them
+# UDF to merge collected JSON array strings into one deduplicated list
 @F.udf(StringType())
 def merge_collected_arrays(arr_of_strings):
     """Takes an array of JSON-encoded array strings and merges all items."""
@@ -234,7 +139,48 @@ def merge_collected_arrays(arr_of_strings):
         return "[]"
     return json.dumps(sorted(list(merged)))
 
-# Apply the merge UDF to each collected field
+# COMMAND ----------
+
+# Define field categories
+single_fields = [
+    "name", "organization_type", "email", "officialWebsite", "officialPhone",
+    "yearEstablished", "acceptsVolunteers", "facebookLink", "twitterLink",
+    "linkedinLink", "instagramLink", "logo",
+    "address_line1", "address_line2", "address_line3",
+    "address_city", "address_stateOrRegion", "address_zipOrPostcode",
+    "address_country", "address_countryCode",
+    "facilityTypeId", "operatorTypeId", "description",
+    "area", "numberDoctors", "capacity",
+    "missionStatement", "missionStatementLink", "organizationDescription",
+    "mongo DB"
+]
+
+merge_fields = [
+    "specialties", "procedure", "equipment", "capability",
+    "phone_numbers", "websites", "affiliationTypeIds", "countries"
+]
+
+# Build aggregation expressions
+agg_exprs = []
+
+for field in single_fields:
+    if field in df_raw.columns:
+        agg_exprs.append(F.first(F.col(field), ignorenulls=True).alias(field))
+
+agg_exprs.append(F.collect_set("source_url").cast("string").alias("source_urls"))
+agg_exprs.append(F.count("*").alias("source_count"))
+
+for field in merge_fields:
+    if field in df_raw.columns:
+        agg_exprs.append(F.collect_list(field).alias(f"_{field}_raw"))
+
+# Group and aggregate
+df_grouped = df_raw.groupBy("pk_unique_id").agg(*agg_exprs)
+print(f"After grouping: {df_grouped.count()} unique facilities")
+
+# COMMAND ----------
+
+# Merge the collected array fields
 df_clean = df_grouped
 for field in merge_fields:
     raw_col = f"_{field}_raw"
@@ -242,23 +188,21 @@ for field in merge_fields:
         df_clean = df_clean.withColumn(field, merge_collected_arrays(F.col(raw_col)))
         df_clean = df_clean.drop(raw_col)
 
-print(f"Clean dataframe columns: {len(df_clean.columns)}")
+print(f"Clean dataframe: {df_clean.count()} rows, {len(df_clean.columns)} columns")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 1D. Create Searchable Text Column
-# MAGIC
-# MAGIC Combine all free-text fields into one text column for embedding/search.
 
 # COMMAND ----------
 
 @F.udf(StringType())
-def build_search_text(name, description, specialties, procedure, equipment, capability, 
+def build_search_text(name, description, specialties, procedure, equipment, capability,
                        facility_type, city, region, num_doctors, bed_capacity):
-    """Build a comprehensive search text for each facility."""
+    """Build a comprehensive search text for embedding and vector search."""
     parts = []
-    
+
     if name:
         parts.append(f"Facility Name: {name}")
     if facility_type:
@@ -273,11 +217,10 @@ def build_search_text(name, description, specialties, procedure, equipment, capa
         parts.append(f"Bed capacity: {bed_capacity}")
     if description:
         parts.append(f"Description: {description}")
-    
-    # Parse JSON arrays into readable text
-    for label, field in [("Specialties", specialties), 
+
+    for label, field in [("Specialties", specialties),
                           ("Procedures", procedure),
-                          ("Equipment", equipment), 
+                          ("Equipment", equipment),
                           ("Capabilities", capability)]:
         if field and field not in ("null", "[]"):
             try:
@@ -287,10 +230,9 @@ def build_search_text(name, description, specialties, procedure, equipment, capa
             except (json.JSONDecodeError, TypeError):
                 if str(field).strip():
                     parts.append(f"{label}: {field}")
-    
+
     return " | ".join(parts) if parts else ""
 
-# Apply
 df_clean = df_clean.withColumn(
     "search_text",
     build_search_text(
@@ -305,51 +247,50 @@ df_clean = df_clean.withColumn(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1E. Save Clean Data
+# MAGIC ## 1E. Save as Managed Delta Table with Change Data Feed
+# MAGIC
+# MAGIC Change Data Feed (CDF) is required for Databricks Vector Search to sync automatically.
 
 # COMMAND ----------
 
-# Create database
-spark.sql("CREATE DATABASE IF NOT EXISTS hackathon")
+# Save as managed Delta table in Unity Catalog
+TABLE_NAME = f"{TABLE_PREFIX}.facilities_clean"
 
-# Save as Delta table
-df_clean.write.format("delta").mode("overwrite").saveAsTable("hackathon.facilities_clean")
+(
+    df_clean.write
+    .format("delta")
+    .mode("overwrite")
+    .option("overwriteSchema", "true")
+    .saveAsTable(TABLE_NAME)
+)
 
-print(f"Saved {df_clean.count()} clean facility records to hackathon.facilities_clean")
+# Enable Change Data Feed for Vector Search sync
+spark.sql(f"ALTER TABLE {TABLE_NAME} SET TBLPROPERTIES (delta.enableChangeDataFeed = true)")
+
+print(f"Saved {df_clean.count()} clean facilities to {TABLE_NAME}")
+print("Change Data Feed enabled for Vector Search sync")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 1F. Verify the Clean Data
+# MAGIC ## 1F. Verify
 
 # COMMAND ----------
 
-# Reload and verify
-df_verify = spark.table("hackathon.facilities_clean")
+df_verify = spark.table(TABLE_NAME)
+dups = df_verify.count() - df_verify.select("pk_unique_id").distinct().count()
 
 print(f"Total clean facilities: {df_verify.count()}")
-print(f"Any duplicate pk_unique_id: {df_verify.count() - df_verify.select('pk_unique_id').distinct().count()}")
+print(f"Duplicate pk_unique_id: {dups}")
+assert dups == 0, "ERROR: Duplicates still present!"
 
-# COMMAND ----------
-
-# Show a sample of well-populated facilities
-print("Sample facilities with rich data:")
+print("\nSample facilities with rich data:")
 df_verify.filter(
-    (F.col("procedure") != "[]") & 
-    (F.col("equipment") != "[]")
-).select(
-    "name", "address_city", "address_stateOrRegion", 
-    "facilityTypeId", "numberDoctors", "capacity"
+    (F.col("procedure") != "[]") & (F.col("equipment") != "[]")
+).select("name", "address_city", "address_stateOrRegion", "facilityTypeId", "numberDoctors", "capacity"
 ).show(10, truncate=False)
 
 # COMMAND ----------
 
-# Check the search_text column
-df_verify.select("name", "search_text").filter(
-    F.length("search_text") > 100
-).show(5, truncate=100)
-
-# COMMAND ----------
-
-print("Step 1 complete! Clean data is ready in hackathon.facilities_clean")
-print(f"Next: Run notebook 02_data_analysis.py")
+print(f"Step 1 complete! Clean data at {TABLE_NAME}")
+print("Next: Run notebook 02_data_analysis")

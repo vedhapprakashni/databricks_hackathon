@@ -1,220 +1,308 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # Step 3: Embedding and Vector Store
+# MAGIC # Step 3: Databricks Vector Search Index
 # MAGIC
 # MAGIC This notebook:
-# MAGIC 1. Loads the enriched facility data
-# MAGIC 2. Generates embeddings using sentence-transformers (runs locally on the cluster)
-# MAGIC 3. Builds a FAISS vector index for fast semantic search
-# MAGIC 4. Saves the index and metadata to DBFS for reuse
+# MAGIC 1. Creates a Databricks Vector Search index on the enriched facilities table
+# MAGIC 2. Uses Delta Sync to keep the index in sync with the source table
+# MAGIC 3. Uses the built-in Databricks embedding model (or sentence-transformers as fallback)
+# MAGIC 4. Tests semantic search queries
 # MAGIC
 # MAGIC **Run notebooks 00, 01, 02 first!**
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3A. Load Data and Prepare Texts
+# MAGIC ## 3A. Configuration
 
 # COMMAND ----------
 
-import json
-import numpy as np
-import pickle
-from pyspark.sql import functions as F
+import time
+from databricks.vector_search.client import VectorSearchClient
 
-# Load enriched data
-df = spark.table("hackathon.facilities_enriched")
-print(f"Loaded {df.count()} facilities")
+CATALOG = spark.conf.get("hackathon.catalog", "hive_metastore")
+SCHEMA = spark.conf.get("hackathon.schema", "hackathon")
+TABLE_PREFIX = f"{CATALOG}.{SCHEMA}"
+VS_ENDPOINT = spark.conf.get("hackathon.vs_endpoint", "vf_facility_search")
 
-# Collect to pandas for embedding (FAISS works with numpy/pandas)
-pdf = df.select(
-    "pk_unique_id", "name", "search_text", "address_city",
-    "address_stateOrRegion", "facilityTypeId", "specialties",
-    "procedure", "equipment", "capability", "description",
-    "numberDoctors", "capacity", "operatorTypeId",
-    "num_procedures", "num_equipment", "num_capabilities", "num_specialties",
-    "flag_procedures_no_doctors", "flag_capacity_no_equipment",
-    "flag_clinic_claims_surgery", "flag_too_many_specialties", "flag_sparse_record"
-).toPandas()
+SOURCE_TABLE = f"{TABLE_PREFIX}.facilities_enriched"
+VS_INDEX_NAME = f"{TABLE_PREFIX}.facilities_vs_index"
 
-print(f"Converted {len(pdf)} rows to pandas")
+print(f"Source table: {SOURCE_TABLE}")
+print(f"VS Index: {VS_INDEX_NAME}")
+print(f"VS Endpoint: {VS_ENDPOINT}")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3B. Generate Embeddings
+# MAGIC ## 3B. Wait for Vector Search Endpoint to be Ready
+
+# COMMAND ----------
+
+vsc = VectorSearchClient()
+
+# Wait for endpoint to be ready (can take a few minutes on first creation)
+for i in range(20):
+    try:
+        endpoint = vsc.get_endpoint(VS_ENDPOINT)
+        state = endpoint.get("endpoint_status", {}).get("state", "UNKNOWN")
+        print(f"Endpoint status: {state}")
+        if state == "ONLINE":
+            print("Endpoint is ready!")
+            break
+    except Exception as e:
+        print(f"Waiting for endpoint... ({e})")
+    time.sleep(30)
+else:
+    print("WARNING: Endpoint may not be ready. Continuing anyway...")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3C. Create Vector Search Index
 # MAGIC
-# MAGIC Using `all-MiniLM-L6-v2` -- a small, fast model that produces 384-dimension embeddings.
-# MAGIC Runs entirely on the cluster CPU, no API calls needed.
+# MAGIC We use a **Delta Sync Index** that automatically stays in sync with the source Delta table.
+# MAGIC The `search_text` column is embedded using Databricks' built-in embedding model.
 
 # COMMAND ----------
 
-from sentence_transformers import SentenceTransformer
-
-# Load embedding model (downloads ~90MB on first run, cached after that)
-print("Loading embedding model...")
-embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-print("Model loaded!")
-
-# COMMAND ----------
-
-# Prepare text for each facility
-texts = pdf["search_text"].fillna("").tolist()
-
-# Filter out empty texts (keep track of indices)
-valid_indices = [i for i, t in enumerate(texts) if len(t.strip()) > 10]
-valid_texts = [texts[i] for i in valid_indices]
-valid_pdf = pdf.iloc[valid_indices].reset_index(drop=True)
-
-print(f"Facilities with valid search text: {len(valid_texts)} / {len(texts)}")
+# Check if index already exists
+try:
+    existing_index = vsc.get_index(VS_ENDPOINT, VS_INDEX_NAME)
+    print(f"Index '{VS_INDEX_NAME}' already exists!")
+    print(f"Status: {existing_index.describe()}")
+    INDEX_EXISTS = True
+except Exception:
+    INDEX_EXISTS = False
+    print(f"Index '{VS_INDEX_NAME}' does not exist. Creating...")
 
 # COMMAND ----------
 
-# Generate embeddings (batched for efficiency)
-print("Generating embeddings... (this may take 1-2 minutes)")
-embeddings = embed_model.encode(
-    valid_texts,
-    show_progress_bar=True,
-    batch_size=64,
-    normalize_embeddings=True  # Normalize for cosine similarity
-)
-
-print(f"Embeddings shape: {embeddings.shape}")
-print(f"Embedding dimension: {embeddings.shape[1]}")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3C. Build FAISS Index
-
-# COMMAND ----------
-
-import faiss
-
-# Build the index using Inner Product (since embeddings are normalized, this = cosine similarity)
-dimension = embeddings.shape[1]  # 384
-index = faiss.IndexFlatIP(dimension)  # Inner Product for cosine similarity
-index.add(embeddings.astype(np.float32))
-
-print(f"FAISS index built with {index.ntotal} vectors of dimension {dimension}")
+if not INDEX_EXISTS:
+    try:
+        # Create Delta Sync Index with Databricks-managed embeddings
+        index = vsc.create_delta_sync_index(
+            endpoint_name=VS_ENDPOINT,
+            index_name=VS_INDEX_NAME,
+            source_table_name=SOURCE_TABLE,
+            primary_key="pk_unique_id",
+            pipeline_type="TRIGGERED",  # Sync on demand (use "CONTINUOUS" for auto-sync)
+            embedding_source_column="search_text",
+            embedding_model_endpoint_name="databricks-bge-large-en"  # Built-in embedding model
+        )
+        print(f"Vector Search index created: {VS_INDEX_NAME}")
+        print("Index is syncing... this may take 5-10 minutes.")
+    except Exception as e:
+        error_msg = str(e)
+        print(f"Databricks BGE model failed: {error_msg}")
+        print("\nTrying with databricks-gte-large-en instead...")
+        try:
+            index = vsc.create_delta_sync_index(
+                endpoint_name=VS_ENDPOINT,
+                index_name=VS_INDEX_NAME,
+                source_table_name=SOURCE_TABLE,
+                primary_key="pk_unique_id",
+                pipeline_type="TRIGGERED",
+                embedding_source_column="search_text",
+                embedding_model_endpoint_name="databricks-gte-large-en"
+            )
+            print(f"Vector Search index created with GTE model: {VS_INDEX_NAME}")
+        except Exception as e2:
+            print(f"\nDatabricks embedding models not available: {e2}")
+            print("Falling back to self-managed embeddings (see section 3C-ALT below)")
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 3D. Test Semantic Search
+# MAGIC ## 3C-ALT. Fallback: Self-Managed Embeddings with sentence-transformers
+# MAGIC
+# MAGIC If Databricks embedding models are not available, we compute embeddings ourselves
+# MAGIC and create a Direct Access Index.
 
 # COMMAND ----------
 
-def search_facilities(query: str, k: int = 5):
-    """Search for facilities matching a natural language query."""
-    # Encode query
-    query_embedding = embed_model.encode([query], normalize_embeddings=True).astype(np.float32)
-    
-    # Search FAISS
-    scores, indices = index.search(query_embedding, k)
-    
-    # Get results
-    results = []
-    for rank, (score, idx) in enumerate(zip(scores[0], indices[0])):
-        if idx >= 0 and idx < len(valid_pdf):
-            row = valid_pdf.iloc[idx]
-            results.append({
-                "rank": rank + 1,
-                "score": float(score),
-                "name": row["name"],
-                "city": row["address_city"],
-                "region": row["address_stateOrRegion"],
-                "type": row["facilityTypeId"],
-                "specialties": row["specialties"],
-                "doctors": row["numberDoctors"],
-                "capacity": row["capacity"],
-            })
-    return results
+# Only run this if the Delta Sync index creation failed above
+FALLBACK_MODE = False
+
+try:
+    vsc.get_index(VS_ENDPOINT, VS_INDEX_NAME)
+    print("Delta Sync index exists. Skipping fallback.")
+except Exception:
+    print("Using fallback: self-managed embeddings with sentence-transformers")
+    FALLBACK_MODE = True
 
 # COMMAND ----------
 
-# Test query 1: Equipment search
+if FALLBACK_MODE:
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+
+    # Load embedding model
+    print("Loading sentence-transformers model...")
+    embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+    EMBEDDING_DIM = 384
+
+    # Load data
+    pdf = spark.table(SOURCE_TABLE).select("pk_unique_id", "search_text").toPandas()
+    texts = pdf["search_text"].fillna("").tolist()
+    ids = pdf["pk_unique_id"].tolist()
+
+    # Generate embeddings
+    print(f"Generating embeddings for {len(texts)} facilities...")
+    embeddings = embed_model.encode(texts, show_progress_bar=True, batch_size=64, normalize_embeddings=True)
+    print(f"Embeddings shape: {embeddings.shape}")
+
+    # Create a Direct Access Index
+    try:
+        index = vsc.create_direct_access_index(
+            endpoint_name=VS_ENDPOINT,
+            index_name=VS_INDEX_NAME,
+            primary_key="pk_unique_id",
+            embedding_dimension=EMBEDDING_DIM,
+            embedding_vector_column="embedding",
+            schema={
+                "pk_unique_id": "string",
+                "search_text": "string",
+                "embedding": "array<float>"
+            }
+        )
+        print(f"Direct Access index created: {VS_INDEX_NAME}")
+
+        # Upsert embeddings in batches
+        batch_size = 50
+        for i in range(0, len(ids), batch_size):
+            batch = [
+                {
+                    "pk_unique_id": ids[j],
+                    "search_text": texts[j],
+                    "embedding": embeddings[j].tolist()
+                }
+                for j in range(i, min(i + batch_size, len(ids)))
+            ]
+            index.upsert(batch)
+            print(f"  Upserted batch {i//batch_size + 1}/{(len(ids) + batch_size - 1)//batch_size}")
+
+        print(f"All {len(ids)} embeddings uploaded to Vector Search index")
+    except Exception as e:
+        print(f"Direct Access index creation failed: {e}")
+        print("\nFalling back to local FAISS index...")
+        
+        # Ultimate fallback: FAISS
+        import faiss
+        import pickle
+        import tempfile
+        
+        faiss_index = faiss.IndexFlatIP(EMBEDDING_DIM)
+        faiss_index.add(embeddings.astype(np.float32))
+        
+        local_dir = tempfile.mkdtemp()
+        faiss.write_index(faiss_index, f"{local_dir}/facility_index.faiss")
+        with open(f"{local_dir}/facility_metadata.pkl", "wb") as f:
+            pickle.dump({"texts": texts, "ids": ids, "dataframe": pdf}, f)
+        
+        dbutils.fs.mkdirs("/FileStore/hackathon/vector_store")
+        dbutils.fs.cp(f"file:{local_dir}/facility_index.faiss", "/FileStore/hackathon/vector_store/facility_index.faiss")
+        dbutils.fs.cp(f"file:{local_dir}/facility_metadata.pkl", "/FileStore/hackathon/vector_store/facility_metadata.pkl")
+        print("FAISS index saved to /FileStore/hackathon/vector_store/")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3D. Wait for Index Sync (Delta Sync only)
+
+# COMMAND ----------
+
+if not FALLBACK_MODE:
+    print("Waiting for index to sync...")
+    for i in range(30):
+        try:
+            idx = vsc.get_index(VS_ENDPOINT, VS_INDEX_NAME)
+            status = idx.describe()
+            state = status.get("status", {}).get("detailed_state", "UNKNOWN")
+            num_rows = status.get("status", {}).get("num_rows_updated", 0)
+            print(f"  [{i+1}] State: {state}, Rows indexed: {num_rows}")
+            if state == "ONLINE_NO_PENDING_UPDATE":
+                print("Index is fully synced!")
+                break
+            if "ONLINE" in str(state) and num_rows > 0:
+                print("Index is online with data!")
+                break
+        except Exception as e:
+            print(f"  [{i+1}] Checking... ({e})")
+        time.sleep(20)
+    else:
+        print("Index may still be syncing. You can continue and check back later.")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## 3E. Test Semantic Search
+
+# COMMAND ----------
+
+def search_facilities(query: str, k: int = 5, filters: dict = None):
+    """Search facilities using Databricks Vector Search."""
+    try:
+        idx = vsc.get_index(VS_ENDPOINT, VS_INDEX_NAME)
+        
+        # Build search kwargs
+        search_kwargs = {
+            "query_text": query,
+            "columns": ["pk_unique_id", "search_text"],
+            "num_results": k,
+        }
+        if filters:
+            search_kwargs["filters"] = filters
+        
+        results = idx.similarity_search(**search_kwargs)
+        return results
+    except Exception as e:
+        print(f"Vector Search query failed: {e}")
+        print("Index may still be syncing. Try again in a few minutes.")
+        return None
+
+# COMMAND ----------
+
+# Test 1: Equipment search
 print("=== Query: 'hospitals with CT scanners' ===")
 results = search_facilities("hospitals with CT scanners")
-for r in results:
-    print(f"  {r['rank']}. {r['name']} ({r['city']}, {r['region']}) - Score: {r['score']:.3f}")
+if results:
+    for row in results.get("result", {}).get("data_array", []):
+        print(f"  ID: {row[0]}, Score: {row[-1]:.3f}")
+        print(f"  Text: {str(row[1])[:150]}...")
+        print()
 
 # COMMAND ----------
 
-# Test query 2: Regional search
-print("\n=== Query: 'surgical facilities in Northern Ghana' ===")
+# Test 2: Regional search
+print("=== Query: 'surgical facilities in Northern Ghana' ===")
 results = search_facilities("surgical facilities in Northern Ghana")
-for r in results:
-    print(f"  {r['rank']}. {r['name']} ({r['city']}, {r['region']}) - Score: {r['score']:.3f}")
+if results:
+    for row in results.get("result", {}).get("data_array", []):
+        print(f"  ID: {row[0]}, Score: {row[-1]:.3f}")
+        print(f"  Text: {str(row[1])[:150]}...")
+        print()
 
 # COMMAND ----------
 
-# Test query 3: Service search
-print("\n=== Query: 'dental clinics in Accra' ===")
+# Test 3: Service search
+print("=== Query: 'dental clinics in Accra' ===")
 results = search_facilities("dental clinics in Accra")
-for r in results:
-    print(f"  {r['rank']}. {r['name']} ({r['city']}, {r['region']}) Type: {r['type']} - Score: {r['score']:.3f}")
+if results:
+    for row in results.get("result", {}).get("data_array", []):
+        print(f"  ID: {row[0]}, Score: {row[-1]:.3f}")
+        print(f"  Text: {str(row[1])[:150]}...")
+        print()
 
 # COMMAND ----------
 
-# Test query 4: Capability search
-print("\n=== Query: 'emergency medicine and trauma care' ===")
-results = search_facilities("emergency medicine and trauma care")
-for r in results:
-    print(f"  {r['rank']}. {r['name']} ({r['city']}, {r['region']}) - Score: {r['score']:.3f}")
+# Save VS config for other notebooks
+spark.conf.set("hackathon.vs_index", VS_INDEX_NAME)
+spark.conf.set("hackathon.fallback_mode", str(FALLBACK_MODE))
 
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3E. Save Index and Metadata to DBFS
-
-# COMMAND ----------
-
-import os
-import tempfile
-
-# Create a temp directory to save files, then copy to DBFS
-local_dir = tempfile.mkdtemp()
-
-# Save FAISS index
-faiss_path = os.path.join(local_dir, "facility_index.faiss")
-faiss.write_index(index, faiss_path)
-print(f"FAISS index saved locally: {faiss_path}")
-
-# Save the metadata (facility data aligned with index)
-meta_path = os.path.join(local_dir, "facility_metadata.pkl")
-metadata = {
-    "texts": valid_texts,
-    "dataframe": valid_pdf,
-    "embedding_model": "all-MiniLM-L6-v2",
-    "dimension": dimension,
-    "total_vectors": index.ntotal,
-}
-with open(meta_path, "wb") as f:
-    pickle.dump(metadata, f)
-print(f"Metadata saved locally: {meta_path}")
-
-# Copy to DBFS
-dbfs_dir = "/FileStore/hackathon/vector_store"
-dbutils.fs.mkdirs(dbfs_dir)
-dbutils.fs.cp(f"file:{faiss_path}", f"{dbfs_dir}/facility_index.faiss")
-dbutils.fs.cp(f"file:{meta_path}", f"{dbfs_dir}/facility_metadata.pkl")
-
-print(f"\nFiles saved to DBFS: {dbfs_dir}/")
-print(f"  facility_index.faiss ({index.ntotal} vectors)")
-print(f"  facility_metadata.pkl ({len(valid_pdf)} facilities)")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## 3F. Verify Save
-
-# COMMAND ----------
-
-# Verify files exist on DBFS
-files = dbutils.fs.ls(dbfs_dir)
-for f in files:
-    print(f"  {f.name}: {f.size} bytes")
-
-print("\nStep 3 complete! Vector store is ready.")
-print("Next: Run notebook 04_rag_chain.py")
+print("=" * 60)
+print("VECTOR STORE COMPLETE")
+print("=" * 60)
+print(f"Index: {VS_INDEX_NAME}")
+print(f"Fallback mode: {FALLBACK_MODE}")
+print("Next: Run notebook 04_rag_chain")
