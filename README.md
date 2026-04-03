@@ -1,6 +1,5 @@
 # Bridging Medical Deserts: AI-Powered Healthcare Intelligence Agent
 
-> **Databricks × Accenture Hackathon** — Virtue Foundation
 
 An AI-powered healthcare intelligence system built on Databricks that identifies medical deserts, detects anomalies in facility claims, and enables natural language querying over Ghana healthcare facility data.
 
