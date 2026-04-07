@@ -297,30 +297,33 @@ def build_faiss_index(texts):
 # LLM SETUP
 # ──────────────────────────────────────────────
 def get_llm():
-    """Initialize Groq LLM."""
-    api_key = os.environ.get("GROQ_API_KEY")
+    """Initialize Databricks Foundation Model LLM."""
+    db_host = os.environ.get("DATABRICKS_HOST")
+    db_token = os.environ.get("DATABRICKS_TOKEN")
 
-    # Try streamlit secrets (for Cloud deployment) only if secrets file exists
-    if not api_key:
+    # Try streamlit secrets only if secrets file exists
+    if not (db_host and db_token):
         try:
             if hasattr(st, 'secrets') and len(st.secrets) > 0:
-                api_key = st.secrets.get("GROQ_API_KEY")
+                db_host = st.secrets.get("DATABRICKS_HOST", db_host)
+                db_token = st.secrets.get("DATABRICKS_TOKEN", db_token)
         except Exception:
             pass
 
-    if not api_key:
+    if not (db_host and db_token):
         return None
 
     try:
-        from langchain_groq import ChatGroq
-        return ChatGroq(
-            model="llama-3.3-70b-versatile",
-            api_key=api_key,
+        from langchain_community.chat_models import ChatDatabricks
+        os.environ["DATABRICKS_HOST"] = db_host
+        os.environ["DATABRICKS_TOKEN"] = db_token
+        return ChatDatabricks(
+            endpoint="databricks-meta-llama-3-1-70b-instruct",
             temperature=0,
             max_tokens=2048
         )
     except Exception as e:
-        st.error(f"LLM init error: {e}")
+        st.error(f"Databricks LLM init error: {e}")
         return None
 
 
@@ -576,16 +579,18 @@ def build_facility_map(df):
 
 
 def build_desert_map(regional_df):
-    """Medical desert heatmap."""
+    """Medical desert and Risk Zone heatmap."""
     m = folium.Map(location=[7.9465, -1.0232], zoom_start=7, tiles="cartodbpositron")
 
-    marker_count = 0
     for _, row in regional_df.iterrows():
         coords = get_region_coords(row.get('address_stateOrRegion'))
         if not coords:
             continue
 
         score = row.get('desert_score', 0)
+        has_emerg = row.get('has_emergency', 0)
+        
+        # Determine base color
         if score > 80:
             color, opacity = '#e74c3c', 0.8
         elif score > 50:
@@ -597,38 +602,67 @@ def build_desert_map(regional_df):
 
         radius = max(15, 50 - int(row.get('facility_count', 0)) * 2)
 
-        popup = f"""<div style="min-width:200px;color:white;background:rgba(0,0,0,0.85);
+        # Build popup
+        popup_html = f"""<div style="min-width:200px;color:white;background:rgba(0,0,0,0.85);
             padding:10px;border-radius:8px;">
             <h4 style="color:{color};margin:0">{row['address_stateOrRegion']}</h4>
             <hr style="border-color:{color};margin:5px 0">
             🏥 Facilities: <b>{int(row.get('facility_count',0))}</b><br>
             👨‍⚕️ Doctors: <b>{int(row.get('total_doctors',0))}</b><br>
-            🛏️ Beds: <b>{int(row.get('total_beds',0))}</b><br>
-            📊 Desert Score: <b>{score}</b>
-        </div>"""
+            🚨 Emergency Units: <b>{int(has_emerg)}</b><br>
+            📊 Desert Score: <b>{score}</b>"""
+            
+        # Add risk/expertise warnings to popup
+        if score > 50 and has_emerg == 0:
+             popup_html += "<br><br><b style='color:#e74c3c'>⚠️ LIVES AT RISK: No Emergency</b>"
+        if row.get('has_surgery', 0) > 10:
+             popup_html += "<br><br><b style='color:#3498db'>⭐ EXPERTISE HUB</b>"
+             
+        popup_html += "</div>"
 
+        # Base circle
         folium.CircleMarker(
             location=[coords['lat'], coords['lon']],
             radius=radius, color=color, fill=True,
             fill_color=color, fill_opacity=opacity,
-            popup=folium.Popup(popup, max_width=280),
+            popup=folium.Popup(popup_html, max_width=300),
             tooltip=f"{row['address_stateOrRegion']} (Score: {score})"
         ).add_to(m)
+
+        # Add Risk Zone Highlight (pulsating-like large circle)
+        if score > 50 and has_emerg == 0:
+            folium.Circle(
+                location=[coords['lat'], coords['lon']],
+                radius=40000, color='#c0392b', weight=2, fill=True,
+                fill_color='#e74c3c', fill_opacity=0.1,
+                tooltip="High Risk Zone: No Emergency Care"
+            ).add_to(m)
+            
+        # Add Expertise Hub Highlight
+        if row.get('has_surgery', 0) > 10:
+            folium.Circle(
+                location=[coords['lat'], coords['lon']],
+                radius=30000, color='#2980b9', weight=2, fill=True,
+                fill_color='#3498db', fill_opacity=0.1,
+                tooltip="Expertise Hub: High Surgical Capacity"
+            ).add_to(m)
 
     title = """<div style="position:fixed;top:10px;left:50%;transform:translateX(-50%);
         z-index:1000;background:rgba(0,0,0,0.8);padding:10px 24px;border-radius:8px;
         color:white;font-size:16px;font-weight:bold;">
-        🏜️ Ghana Medical Desert Map — Virtue Foundation</div>"""
+        🏜️ Ghana Medical Desert & Risk Zone Map</div>"""
     m.get_root().html.add_child(folium.Element(title))
 
     legend = """<div style="position:fixed;bottom:50px;left:50px;z-index:1000;
         background:rgba(0,0,0,0.85);padding:10px;border-radius:8px;
         border:1px solid #555;font-size:12px;color:white;">
-        <b>Desert Score</b><br>
+        <b>Desert Score & Layers</b><br>
         <span style="color:#e74c3c">●</span> Critical (&gt;80)<br>
         <span style="color:#e67e22">●</span> High (50-80)<br>
         <span style="color:#f1c40f">●</span> Moderate (20-50)<br>
-        <span style="color:#2ecc71">●</span> Adequate (&lt;20)
+        <span style="color:#2ecc71">●</span> Adequate (&lt;20)<hr style="margin:4px 0;">
+        <span style="color:#c0392b;border:1px solid #c0392b;border-radius:50%;padding:0 5px;">&nbsp;</span> Lives at Risk<br>
+        <span style="color:#2980b9;border:1px solid #2980b9;border-radius:50%;padding:0 5px;">&nbsp;</span> Expertise Hub
     </div>"""
     m.get_root().html.add_child(folium.Element(legend))
     return m
@@ -793,11 +827,15 @@ def main():
         st.divider()
 
         if llm is None:
-            st.warning("⚠️ **Groq API Key not set**")
-            api_key = st.text_input("Enter Groq API Key:", type="password")
-            if api_key:
-                os.environ["GROQ_API_KEY"] = api_key
-                st.rerun()
+            st.warning("⚠️ **Databricks Credentials not set**")
+            with st.form("db_creds"):
+                db_host = st.text_input("Enter Databricks Workspace URL:")
+                db_token = st.text_input("Enter Databricks PAT:", type="password")
+                submit = st.form_submit_button("Connect")
+                if submit and db_host and db_token:
+                    os.environ["DATABRICKS_HOST"] = db_host
+                    os.environ["DATABRICKS_TOKEN"] = db_token
+                    st.rerun()
         else:
             st.success("✅ LLM Connected")
 
@@ -829,8 +867,8 @@ def main():
     """, unsafe_allow_html=True)
 
     # ── Tabs ──
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🏠 Overview", "💬 Ask the Agent", "🏜️ Medical Deserts", "⚠️ Anomalies"
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🏠 Overview", "💬 Ask the Agent", "🏜️ Medical Deserts", "⚠️ Anomalies", "🎯 Action Planner"
     ])
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -913,6 +951,12 @@ def main():
             else:
                 st.markdown(f'<div class="chat-agent">🤖 <b>Agent:</b><br>{msg["content"]}</div>',
                             unsafe_allow_html=True)
+                if 'trace' in msg and msg['trace']:
+                    with st.expander("🔍 View Agent Trace & Citations"):
+                        st.markdown(msg['trace'])
+                        if 'citations' in msg and isinstance(msg['citations'], pd.DataFrame) and not msg['citations'].empty:
+                            st.markdown("**Cited Data Rows:**")
+                            st.dataframe(msg['citations'], use_container_width=True)
 
         # Input
         query = st.chat_input("Ask a question about healthcare facilities...")
@@ -925,30 +969,30 @@ def main():
             with st.spinner("🔍 Analyzing..."):
                 intent = classify_intent(query)
                 answer = ""
+                trace_text = ""
+                citations_df = pd.DataFrame()
 
                 if intent == 'SQL':
                     sql, _ = sql_agent(query, llm, schema_info)
                     if sql and not sql.startswith("Error") and not sql.startswith("⚠️"):
                         try:
                             result = con.execute(sql).fetchdf()
+                            trace_text = f"**Step 1:** Intent classified as SQL.\n**Step 2:** Generated DuckDB SQL Query:\n```sql\n{sql}\n```"
+                            citations_df = result.head(20)
+                            
                             if len(result) > 0:
                                 # Summarize with LLM
                                 if llm:
-                                    summary_prompt = f"""Based on this SQL result for the question "{query}":
-
-{result.head(15).to_string()}
-
-Provide a clear, concise answer. Reference specific numbers and names."""
+                                    summary_prompt = f"""Based on this SQL result for the question "{query}":\n\n{result.head(15).to_string()}\n\nProvide a clear, concise answer. Reference specific numbers and names."""
                                     summary = llm.invoke(summary_prompt)
-                                    answer = f"**🔍 Route: SQL Agent**\n\n{summary.content}\n\n**Generated SQL:**\n```sql\n{sql}\n```"
+                                    answer = f"**🔍 Route: SQL Agent**\n\n{summary.content}"
                                 else:
-                                    answer = f"**SQL Result:**\n\n{result.head(15).to_markdown()}"
-
-                                st.dataframe(result.head(20), use_container_width=True)
+                                    answer = f"**SQL Result:** Found {len(result)} rows."
                             else:
-                                answer = f"No results found.\n\n**SQL:** `{sql}`"
+                                answer = f"No results found."
                         except Exception as e:
-                            answer = f"SQL execution error: {e}\n\n**Generated SQL:** `{sql}`"
+                            answer = f"SQL execution error: {e}"
+                            trace_text = f"**Generated SQL:** `{sql}`"
                     else:
                         answer = sql or "Could not generate SQL."
 
@@ -958,19 +1002,15 @@ Provide a clear, concise answer. Reference specific numbers and names."""
                         context = results[['name', 'address_stateOrRegion', 'facilityTypeId',
                                            'specialties', 'procedure', 'equipment',
                                            'capability', 'description']].to_string()
+                        
+                        trace_text = f"**Step 1:** Intent classified as SEMANTIC.\n**Step 2:** Retrieved {len(results)} facilities using FAISS Vector Search.\n**Step 3:** Analyzing context with LLM."
+                        citations_df = results[['name', 'address_stateOrRegion', 'facilityTypeId', 'numberDoctors', 'capacity']].head(10)
+                        
                         if llm:
                             answer = reasoning_agent(query, context, llm)
                             answer = f"**🔍 Route: Semantic Search + Reasoning**\n\n{answer}"
                         else:
-                            answer = f"**Found {len(results)} relevant facilities:**\n\n"
-                            for _, r in results.head(5).iterrows():
-                                answer += f"- **{r['name']}** ({r.get('facilityTypeId','N/A')}) — {r.get('address_stateOrRegion','N/A')}\n"
-
-                        st.dataframe(
-                            results[['name', 'address_stateOrRegion', 'facilityTypeId',
-                                     'numberDoctors', 'capacity']].head(10),
-                            use_container_width=True
-                        )
+                            answer = f"**Found {len(results)} relevant facilities.**"
                     else:
                         answer = "No matching facilities found."
 
@@ -982,16 +1022,28 @@ Provide a clear, concise answer. Reference specific numbers and names."""
                         context = results[['name', 'address_stateOrRegion', 'facilityTypeId',
                                            'specialties', 'procedure', 'equipment',
                                            'capability', 'numberDoctors', 'capacity']].to_string()
+                        citations_df = results[['name', 'address_stateOrRegion', 'facilityTypeId', 'numberDoctors', 'capacity']].head(10)
 
                     # Add regional data
                     context += f"\n\nREGIONAL DESERT SCORES:\n{regional.to_string()}"
+                    trace_text = f"**Step 1:** Intent classified as REASONING.\n**Step 2:** Retrieved {len(results)} facilities via search.\n**Step 3:** Cross-referencing against Regional Desert Scores.\n**Step 4:** Executing validation & mismatch logic."
 
                     answer = reasoning_agent(query, context, llm)
                     answer = f"**🔍 Route: Medical Reasoning Agent**\n\n{answer}"
 
-                st.session_state.messages.append({"role": "agent", "content": answer})
-                st.markdown(f'<div class="chat-agent">🤖 <b>Agent:</b><br>{answer}</div>',
-                            unsafe_allow_html=True)
+                st.session_state.messages.append({
+                    "role": "agent", 
+                    "content": answer,
+                    "trace": trace_text,
+                    "citations": citations_df
+                })
+                
+                st.markdown(f'<div class="chat-agent">🤖 <b>Agent:</b><br>{answer}</div>', unsafe_allow_html=True)
+                with st.expander("🔍 View Agent Trace & Citations"):
+                    st.markdown(trace_text)
+                    if not citations_df.empty:
+                        st.markdown("**Cited Data Rows:**")
+                        st.dataframe(citations_df, use_container_width=True)
 
         # Sample questions
         st.divider()
@@ -1131,6 +1183,53 @@ Provide a clear, concise answer. Reference specific numbers and names."""
         else:
             st.info("No anomalies detected in the current dataset.")
 
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # TAB 5: ACTION PLANNER
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    with tab5:
+        st.markdown('<div class="section-header">🎯 Interactive Action Planner</div>', unsafe_allow_html=True)
+        st.markdown("""
+        Generate a dynamic **30-60-90 day intervention plan** for NGO deployment based on the latest AI analysis of medical deserts and facility anomalies.
+        This provides a clear, actionable roadmap for the Virtue Foundation.
+        """)
+        
+        if st.button("🚀 Generate Tactical Action Plan", type="primary"):
+            if llm is None:
+                st.error("Please connect your LLM (Databricks) in the sidebar to generate a plan.")
+            else:
+                with st.spinner("Analyzing regional needs and synthesizing deployment plan..."):
+                    # Create context for planner
+                    critical_deserts = regional[regional['desert_score'] > 50].head(5).to_string()
+                    top_anomalies = flagged[['name', 'address_stateOrRegion'] + flag_cols].head(10).to_string()
+                    
+                    planning_prompt = f"""You are the Chief Medical Logistics Planner for the Virtue Foundation.
+Based on the following critical data from Ghana, create a 30-60-90 day action plan for medical NGO deployment.
+
+CRITICAL MEDICAL DESERTS:
+{critical_deserts}
+
+TOP FACILITY ANOMALIES (Verification Targets):
+{top_anomalies}
+
+Draft a clear, readable Kanban-style action plan consisting of:
+1. **Immediate Actions (0-30 Days)**: Verification visits to the most suspicious facilities.
+2. **Short-term Deployments (30-60 Days)**: Mobile clinics or targeted supply drops to the worst medical deserts.
+3. **Long-term Strategy (60-90 Days)**: Infrastructure and major resource recommendations.
+
+Format using Markdown headers, bullet points, and emojis. Be concise and reference specific facility names and regions."""
+                    
+                    try:
+                        plan_result = llm.invoke(planning_prompt)
+                        
+                        st.success("Plan Generated Successfully!")
+                        st.markdown(f"""
+                        <div style="background: linear-gradient(135deg, rgba(52,152,219,0.1), rgba(46,204,113,0.1)); padding: 24px; border-radius: 12px; border: 1px solid rgba(52,152,219,0.3);">
+                            {plan_result.content}
+                        </div>
+                        """, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Error generating plan: {e}")
 
 if __name__ == "__main__":
     main()
