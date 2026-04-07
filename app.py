@@ -20,7 +20,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import base64
 from io import BytesIO
-from streamlit_folium import st_folium
+import streamlit.components.v1 as components
 
 # ──────────────────────────────────────────────
 # PAGE CONFIG
@@ -462,14 +462,62 @@ GHANA_COORDS = {
     "Savannah": {"lat": 9.0000, "lon": -1.8000},
 }
 
+# Map district/metro names to parent region coords
+DISTRICT_TO_REGION = {
+    "accra": "Greater Accra", "tema": "Greater Accra", "ledzokuku": "Greater Accra",
+    "ga ": "Greater Accra", "adentan": "Greater Accra", "kpeshie": "Greater Accra",
+    "la dade": "Greater Accra", "ayawaso": "Greater Accra", "okaikoi": "Greater Accra",
+    "weija": "Greater Accra", "ablekuma": "Greater Accra", "korle": "Greater Accra",
+    "kumasi": "Ashanti", "obuasi": "Ashanti", "ejisu": "Ashanti", "mampong": "Ashanti",
+    "bekwai": "Ashanti", "offinso": "Ashanti", "asokore": "Ashanti", "asutifi": "Ashanti",
+    "atwima": "Ashanti", "bosomtwe": "Ashanti", "sekyere": "Ashanti", "afigya": "Ashanti",
+    "amansie": "Ashanti", "adansi": "Ashanti", "ahafo ano": "Ashanti", "asante": "Ashanti",
+    "takoradi": "Western", "sekondi": "Western", "tarkwa": "Western", "axim": "Western",
+    "prestea": "Western", "shama": "Western", "ahanta": "Western", "nzema": "Western",
+    "ellembelle": "Western", "jomoro": "Western", "wassa": "Western",
+    "cape coast": "Central", "winneba": "Central", "mankessim": "Central",
+    "agona": "Central", "gomoa": "Central", "mfantsiman": "Central", "keea": "Central",
+    "awutu": "Central", "abura": "Central", "assin": "Central", "twifo": "Central",
+    "koforidua": "Eastern", "nkawkaw": "Eastern", "nsawam": "Eastern", "suhum": "Eastern",
+    "akim": "Eastern", "kwahu": "Eastern", "birim": "Eastern", "atiwa": "Eastern",
+    "ho ": "Volta", "keta": "Volta", "hohoe": "Volta", "kpando": "Volta",
+    "akatsi": "Volta", "tongu": "Volta", "anlo": "Volta", "south dayi": "Volta",
+    "tamale": "Northern", "yendi": "Northern", "savelugu": "Northern",
+    "tolon": "Northern", "sagnarigu": "Northern", "mion": "Northern",
+    "bolgatanga": "Upper East", "bawku": "Upper East", "navrongo": "Upper East",
+    "kassena": "Upper East", "builsa": "Upper East",
+    "wa ": "Upper West", "tumu": "Upper West", "nadowli": "Upper West",
+    "lawra": "Upper West", "jirapa": "Upper West", "sissala": "Upper West",
+    "sunyani": "Bono", "berekum": "Bono", "dormaa": "Bono", "jaman": "Bono",
+    "techiman": "Bono East", "atebubu": "Bono East", "kintampo": "Bono East",
+    "nkoranza": "Bono East", "pru ": "Bono East",
+    "goaso": "Ahafo", "tano": "Ahafo", "asunafo": "Ahafo", "bechem": "Ahafo",
+    "bibiani": "Western North", "sefwi": "Western North", "juaboso": "Western North",
+    "bole": "Savannah", "damongo": "Savannah", "sawla": "Savannah",
+    "nalerigu": "North East", "gambaga": "North East",
+    "kadjebi": "Oti", "nkwanta": "Oti", "krachi": "Oti",
+    "brong": "Brong-Ahafo",
+}
+
 
 def get_region_coords(region_name):
     if not region_name or str(region_name).lower() in ('null', 'none', 'nan', ''):
         return None
+    rn = str(region_name).lower().strip()
+
+    # Direct match
     for key, coords in GHANA_COORDS.items():
-        if key.lower() in str(region_name).lower() or str(region_name).lower() in key.lower():
+        if key.lower() in rn or rn in key.lower():
             return coords
-    return None
+
+    # District-to-region mapping
+    for district_kw, parent_region in DISTRICT_TO_REGION.items():
+        if district_kw in rn:
+            return GHANA_COORDS.get(parent_region)
+
+    # Fallback: approximate center of Ghana with small random offset
+    import random
+    return {"lat": 7.5 + random.uniform(-0.5, 0.5), "lon": -1.5 + random.uniform(-0.5, 0.5)}
 
 
 # ──────────────────────────────────────────────
@@ -529,8 +577,9 @@ def build_facility_map(df):
 
 def build_desert_map(regional_df):
     """Medical desert heatmap."""
-    m = folium.Map(location=[7.9465, -1.0232], zoom_start=7, tiles="cartodbdark_matter")
+    m = folium.Map(location=[7.9465, -1.0232], zoom_start=7, tiles="cartodbpositron")
 
+    marker_count = 0
     for _, row in regional_df.iterrows():
         coords = get_region_coords(row.get('address_stateOrRegion'))
         if not coords:
@@ -834,7 +883,7 @@ def main():
         st.markdown('<div class="section-header">🗺️ Facility Distribution Map</div>',
                     unsafe_allow_html=True)
         facility_map = build_facility_map(df)
-        st_folium(facility_map, width=None, height=500, returned_objects=[])
+        components.html(facility_map._repr_html_(), height=500)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # TAB 2: ASK THE AGENT
@@ -999,7 +1048,7 @@ Provide a clear, concise answer. Reference specific numbers and names."""
         st.markdown('<div class="section-header">🗺️ Medical Desert Heatmap</div>',
                     unsafe_allow_html=True)
         desert_map = build_desert_map(regional)
-        st_folium(desert_map, width=None, height=500, returned_objects=[])
+        components.html(desert_map._repr_html_(), height=500)
 
         # Desert scores chart
         col_left, col_right = st.columns(2)
