@@ -318,7 +318,7 @@ def get_llm():
         os.environ["DATABRICKS_HOST"] = db_host
         os.environ["DATABRICKS_TOKEN"] = db_token
         return ChatDatabricks(
-            endpoint="databricks-meta-llama-3-1-70b-instruct",
+            endpoint="databricks-meta-llama-3-3-70b-instruct",
             temperature=0,
             max_tokens=2048
         )
