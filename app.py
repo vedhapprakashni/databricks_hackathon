@@ -310,19 +310,24 @@ def get_llm():
         except Exception:
             pass
 
-    if not (db_host and db_token):
-        return None
-
     try:
         from langchain_community.chat_models import ChatDatabricks
-        os.environ["DATABRICKS_HOST"] = db_host
-        os.environ["DATABRICKS_TOKEN"] = db_token
+
+        # If running inside Databricks (Apps/Notebooks), credentials are auto-injected
+        if db_host:
+            os.environ["DATABRICKS_HOST"] = db_host
+        if db_token:
+            os.environ["DATABRICKS_TOKEN"] = db_token
+
         return ChatDatabricks(
             endpoint="databricks-meta-llama-3-3-70b-instruct",
             temperature=0,
             max_tokens=2048
         )
     except Exception as e:
+        if not (db_host and db_token):
+            # No credentials at all — need manual input
+            return None
         st.error(f"Databricks LLM init error: {e}")
         return None
 
@@ -833,11 +838,19 @@ def main():
                 db_token = st.text_input("Enter Databricks PAT:", type="password")
                 submit = st.form_submit_button("Connect")
                 if submit and db_host and db_token:
-                    os.environ["DATABRICKS_HOST"] = db_host
+                    # Auto-strip paths — extract just the base URL
+                    from urllib.parse import urlparse
+                    parsed = urlparse(db_host if db_host.startswith('http') else f'https://{db_host}')
+                    clean_host = f"{parsed.scheme}://{parsed.netloc}"
+                    os.environ["DATABRICKS_HOST"] = clean_host
                     os.environ["DATABRICKS_TOKEN"] = db_token
                     st.rerun()
         else:
             st.success("✅ LLM Connected")
+            if st.button("🔌 Disconnect"):
+                os.environ.pop("DATABRICKS_HOST", None)
+                os.environ.pop("DATABRICKS_TOKEN", None)
+                st.rerun()
 
         st.divider()
         st.markdown("#### 📊 Quick Stats")
@@ -853,7 +866,7 @@ def main():
         st.divider()
         st.markdown("""
         <div style="text-align:center;color:#7f8c8d;font-size:11px;">
-            Built with Databricks + Groq<br>
+            Built with Databricks<br>
             © 2026 Hackathon Submission
         </div>
         """, unsafe_allow_html=True)
