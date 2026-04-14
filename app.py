@@ -297,38 +297,30 @@ def build_faiss_index(texts):
 # LLM SETUP
 # ──────────────────────────────────────────────
 def get_llm():
-    """Initialize Databricks Foundation Model LLM."""
-    db_host = os.environ.get("DATABRICKS_HOST")
-    db_token = os.environ.get("DATABRICKS_TOKEN")
+    """Initialize Groq Free Tier LLM."""
+    groq_api_key = os.environ.get("GROQ_API_KEY")
 
     # Try streamlit secrets only if secrets file exists
-    if not (db_host and db_token):
+    if not groq_api_key:
         try:
             if hasattr(st, 'secrets') and len(st.secrets) > 0:
-                db_host = st.secrets.get("DATABRICKS_HOST", db_host)
-                db_token = st.secrets.get("DATABRICKS_TOKEN", db_token)
+                groq_api_key = st.secrets.get("GROQ_API_KEY")
         except Exception:
             pass
 
+    if not groq_api_key:
+        return None
+
     try:
-        from langchain_community.chat_models import ChatDatabricks
-
-        # If running inside Databricks (Apps/Notebooks), credentials are auto-injected
-        if db_host:
-            os.environ["DATABRICKS_HOST"] = db_host
-        if db_token:
-            os.environ["DATABRICKS_TOKEN"] = db_token
-
-        return ChatDatabricks(
-            endpoint="databricks-meta-llama-3-3-70b-instruct",
+        from langchain_groq import ChatGroq
+        os.environ["GROQ_API_KEY"] = groq_api_key
+        return ChatGroq(
+            model="llama-3.3-70b-versatile",
             temperature=0,
             max_tokens=2048
         )
     except Exception as e:
-        if not (db_host and db_token):
-            # No credentials at all — need manual input
-            return None
-        st.error(f"Databricks LLM init error: {e}")
+        st.error(f"Groq LLM init error: {e}")
         return None
 
 
@@ -832,24 +824,18 @@ def main():
         st.divider()
 
         if llm is None:
-            st.warning("⚠️ **Databricks Credentials not set**")
-            with st.form("db_creds"):
-                db_host = st.text_input("Enter Databricks Workspace URL:")
-                db_token = st.text_input("Enter Databricks PAT:", type="password")
+            st.warning("⚠️ **Groq API Key not set**")
+            with st.form("groq_creds"):
+                groq_key = st.text_input("Enter Groq API Key (Free):", type="password")
+                st.markdown("[Get a free key here](https://console.groq.com/keys)", unsafe_allow_html=True)
                 submit = st.form_submit_button("Connect")
-                if submit and db_host and db_token:
-                    # Auto-strip paths — extract just the base URL
-                    from urllib.parse import urlparse
-                    parsed = urlparse(db_host if db_host.startswith('http') else f'https://{db_host}')
-                    clean_host = f"{parsed.scheme}://{parsed.netloc}"
-                    os.environ["DATABRICKS_HOST"] = clean_host
-                    os.environ["DATABRICKS_TOKEN"] = db_token
+                if submit and groq_key:
+                    os.environ["GROQ_API_KEY"] = groq_key
                     st.rerun()
         else:
-            st.success("✅ LLM Connected")
+            st.success("✅ Free LLM Connected")
             if st.button("🔌 Disconnect"):
-                os.environ.pop("DATABRICKS_HOST", None)
-                os.environ.pop("DATABRICKS_TOKEN", None)
+                os.environ.pop("GROQ_API_KEY", None)
                 st.rerun()
 
         st.divider()
@@ -974,6 +960,10 @@ def main():
         # Input
         query = st.chat_input("Ask a question about healthcare facilities...")
 
+        # Check for pending query from sample buttons
+        if not query and 'pending_query' in st.session_state:
+            query = st.session_state.pop('pending_query')
+
         if query:
             st.session_state.messages.append({"role": "user", "content": query})
             st.markdown(f'<div class="chat-user">🧑 <b>You:</b> {query}</div>',
@@ -1072,7 +1062,7 @@ def main():
         for i, q in enumerate(sample_qs):
             with cols[i]:
                 if st.button(q, key=f"sample_{i}", use_container_width=True):
-                    st.session_state.messages.append({"role": "user", "content": q})
+                    st.session_state.pending_query = q
                     st.rerun()
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
