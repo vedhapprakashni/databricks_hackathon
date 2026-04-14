@@ -9,7 +9,7 @@
 [![Streamlit App](https://img.shields.io/badge/Streamlit-Live_Demo-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://your-app.streamlit.app)
 [![Built with Databricks](https://img.shields.io/badge/Built_with-Databricks-FF3621?style=for-the-badge&logo=databricks&logoColor=white)](https://databricks.com)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
+
 
 </div>
 
@@ -529,11 +529,7 @@ Built for the Virtue Foundation to advance healthcare equity in Ghana.
 
 ---
 
-## 📄 License
 
-This project is open-source under the [MIT License](LICENSE).
-
----
 
 <div align="center">
 

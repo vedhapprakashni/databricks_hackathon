@@ -288,8 +288,7 @@ def build_faiss_index(texts):
         index = faiss.IndexFlatIP(embeddings.shape[1])
         index.add(embeddings)
         return index, model
-    except Exception as e:
-        st.warning(f"FAISS index not available: {e}")
+    except Exception:
         return None, None
 
 
